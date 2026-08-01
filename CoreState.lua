@@ -98,38 +98,69 @@ Hub.UIControls = {
 }
 
 -----------------------------------
--- FIXED BASE64 UTILITIES
+-- FAST & BULLETPROOF BASE64 ENCODER/DECODER
 -----------------------------------
 local b64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
 function Hub.Base64Encode(data)
-	return ((data:gsub('.', function(x) 
-		local r, b = '', x:byte()
-		for i = 8, 1, -1 do r = r .. (b % 2^i - b % 2^(i - 1) > 0 and '1' or '0') end
-		return r
-	end)..'0000'):gsub('%d%d%d?%d?%d?', function(x)
-		if (#x < 6) then return '' end
-		local c = 0
-		for i = 1, 6 do c = c + (x:sub(i, i) == '1' and 2^(6 - i) or 0) end
-		return b64Chars:sub(c + 1, c + 1)
-	end)..({ '', '==', '=' })[#data % 3 + 1])
+	if not data or #data == 0 then return "" end
+	local bytes = {string.byte(data, 1, #data)}
+	local len = #bytes
+	local result = {}
+	
+	for i = 1, len, 3 do
+		local b1 = bytes[i]
+		local b2 = bytes[i + 1]
+		local b3 = bytes[i + 2]
+		
+		local n = bit32.lshift(b1, 16) + bit32.lshift(b2 or 0, 8) + (b3 or 0)
+		
+		local c1 = bit32.extract(n, 18, 6)
+		local c2 = bit32.extract(n, 12, 6)
+		local c3 = b2 and bit32.extract(n, 6, 6) or 64
+		local c4 = b3 and bit32.extract(n, 0, 6) or 64
+		
+		table.insert(result, b64Chars:sub(c1 + 1, c1 + 1))
+		table.insert(result, b64Chars:sub(c2 + 1, c2 + 1))
+		table.insert(result, c3 == 64 and "=" or b64Chars:sub(c3 + 1, c3 + 1))
+		table.insert(result, c4 == 64 and "=" or b64Chars:sub(c4 + 1, c4 + 1))
+	end
+	
+	return table.concat(result)
 end
 
 function Hub.Base64Decode(data)
 	data = string.gsub(data, '[^' .. b64Chars .. '=]', '')
-	if data == "" then return "" end
-	return (data:gsub('.', function(x)
-		if (x == '=') then return '' end
-		local pos = b64Chars:find(x, 1, true)
-		if not pos then return '' end
-		local r, f = '', (pos - 1)
-		for i = 6, 1, -1 do r = r .. (f % 2^i - f % 2^(i - 1) > 0 and '1' or '0') end
-		return r
-	end):gsub('%d%d%d%d%d%d%d%d', function(x)
-		local c = 0
-		for i = 1, 8 do c = c + (x:sub(i, i) == '1' and 2^(8 - i) or 0) end
-		return string.char(c)
-	end))
+	if not data or #data == 0 then return "" end
+	
+	local result = {}
+	for i = 1, #data, 4 do
+		local char1 = data:sub(i, i)
+		local char2 = data:sub(i + 1, i + 1)
+		local char3 = data:sub(i + 2, i + 2)
+		local char4 = data:sub(i + 3, i + 3)
+		
+		local c1 = b64Chars:find(char1, 1, true)
+		local c2 = b64Chars:find(char2, 1, true)
+		local c3 = b64Chars:find(char3, 1, true)
+		local c4 = b64Chars:find(char4, 1, true)
+		
+		if c1 and c2 then
+			local n = bit32.lshift(c1 - 1, 18) + bit32.lshift(c2 - 1, 12) 
+				+ bit32.lshift((c3 and c3 <= 64) and (c3 - 1) or 0, 6) 
+				+ ((c4 and c4 <= 64) and (c4 - 1) or 0)
+			
+			table.insert(result, string.char(bit32.extract(n, 16, 8)))
+			if c3 and c3 <= 64 and char3 ~= "=" then
+				table.insert(result, string.char(bit32.extract(n, 8, 8)))
+			end
+			if c4 and c4 <= 64 and char4 ~= "=" then
+				table.insert(result, string.char(bit32.extract(n, 0, 8)))
+			end
+		end
+	end
+	
+	return table.concat(result)
 end
 
 -----------------------------------
