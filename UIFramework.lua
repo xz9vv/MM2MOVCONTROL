@@ -1249,12 +1249,21 @@ shareBtnStroke.Parent = shareConfigBtn
 
 shareConfigBtn.MouseButton1Click:Connect(function()
 	local configData = Hub.GetSerializedConfig and Hub.GetSerializedConfig() or {}
-	local rawJson = HttpService:JSONEncode(configData)
-	local success, shareCode = pcall(function()
+	local successEncode, rawJson = pcall(function()
+		return HttpService:JSONEncode(configData)
+	end)
+	
+	if not successEncode or not rawJson then
+		shareConfigBtn.Text = "JSON Encode Error!"
+		task.delay(2, function() shareConfigBtn.Text = "Generate & Copy Share Code" end)
+		return
+	end
+
+	local successB64, shareCode = pcall(function()
 		return Hub.Base64Encode(rawJson)
 	end)
 
-	if success and shareCode then
+	if successB64 and shareCode and #shareCode > 5 then
 		local setClip = setclipboard or (syn and syn.write_clipboard) or toclipboard
 		if setClip then
 			setClip(shareCode)
