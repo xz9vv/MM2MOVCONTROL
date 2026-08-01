@@ -1140,7 +1140,7 @@ createToggle("Memory Cleaner", 10, function(state)
 						end
 					end
 				end
-				collectgarbage("collect")
+				pcall(function() collectgarbage("count") end)
 			end)
 		end
 
