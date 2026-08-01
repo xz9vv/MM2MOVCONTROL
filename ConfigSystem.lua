@@ -34,6 +34,11 @@ function Hub.GetSerializedConfig()
 	
 	return {
 		OptStates = OptStates,
+		Features = {
+			CoinFarm = Cache.Connections["CoinFarmActive"] or false,
+			CoinESP = Cache.Connections["ExpandHitboxes"] or false,
+			BotSync = Cache.Connections["BotSyncActive"] or false,
+		},
 		Cache = {
 			TweenSpeed = Cache.TweenSpeed,
 			YOffset = Cache.YOffset,
@@ -58,6 +63,7 @@ function Hub.LoadConfigFromTable(data)
 		MemoryCleaner = "Memory Cleaner"
 	}
 
+	-- Load Optimizations
 	if data.OptStates then
 		for optKey, val in pairs(data.OptStates) do
 			local uiName = toggleMapping[optKey]
@@ -70,7 +76,24 @@ function Hub.LoadConfigFromTable(data)
 			pcall(function() UIControls.Sliders["FPS Limit"](data.OptStates.FPSLimit) end)
 		end
 	end
+
+	-- Load Features (Coin Farm, ESP, Bot Sync)
+	if data.Features then
+		if data.Features.CoinFarm ~= nil then
+			if UIControls.Toggles["Auto Coin Farm"] then UIControls.Toggles["Auto Coin Farm"](data.Features.CoinFarm) end
+			if Hub.StartCoinFarm then Hub.StartCoinFarm(data.Features.CoinFarm) end
+		end
+		if data.Features.CoinESP ~= nil then
+			if UIControls.Toggles["Coin ESP Highlights"] then UIControls.Toggles["Coin ESP Highlights"](data.Features.CoinESP) end
+			if Hub.StartCoinESP then Hub.StartCoinESP(data.Features.CoinESP) end
+		end
+		if data.Features.BotSync ~= nil then
+			if UIControls.Toggles["Bot Communication Sync (Auto Pipeline)"] then UIControls.Toggles["Bot Communication Sync (Auto Pipeline)"](data.Features.BotSync) end
+			if Hub.StartBotSync then Hub.StartBotSync(data.Features.BotSync) end
+		end
+	end
 	
+	-- Load Sliders
 	if data.Cache then
 		if data.Cache.TweenSpeed and UIControls.Sliders["Tween Speed"] then
 			pcall(function() UIControls.Sliders["Tween Speed"](data.Cache.TweenSpeed) end)
@@ -83,6 +106,7 @@ function Hub.LoadConfigFromTable(data)
 		end
 	end
 
+	-- Load Selected Bots
 	if data.SelectedBots then
 		table.clear(VisualSelectedBots)
 		for _, botInfo in ipairs(data.SelectedBots) do
