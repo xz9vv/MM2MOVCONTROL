@@ -49,16 +49,15 @@ Hub.Cache = {
 	Volumes = setmetatable({}, {__mode = "k"}),
 	UIs = setmetatable({}, {__mode = "k"}),
 	Connections = {},
-	TweenSpeed = 20,    -- Default safe speed
-	YOffset = 2,       -- Default safe underground offset
+	TweenSpeed = 20,
+	YOffset = 2,
 	Use5YOffset = true,
 	CurrentTween = nil
 }
 
-Hub.CollectedCoins = {} -- Blacklist to prevent targeting lingering coins
-Hub.VisualSelectedBots = {} -- Tracks selected bot UserIds
+Hub.CollectedCoins = {}
+Hub.VisualSelectedBots = {}
 
--- Bot Sync & Stats Trackers
 Hub.SquadAllReadyTime = nil
 Hub.KnownMurderer = nil
 Hub.HasResetThisRound = false
@@ -99,7 +98,7 @@ Hub.UIControls = {
 }
 
 -----------------------------------
--- BASE64 UTILITIES
+-- FIXED BASE64 UTILITIES
 -----------------------------------
 local b64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
@@ -108,7 +107,7 @@ function Hub.Base64Encode(data)
 		local r, b = '', x:byte()
 		for i = 8, 1, -1 do r = r .. (b % 2^i - b % 2^(i - 1) > 0 and '1' or '0') end
 		return r
-	end)..'0000'):gsub('%d%d%d?%d?%d?%d?', function(x)
+	end)..'0000'):gsub('%d%d%d?%d?%d?', function(x)
 		if (#x < 6) then return '' end
 		local c = 0
 		for i = 1, 6 do c = c + (x:sub(i, i) == '1' and 2^(6 - i) or 0) end
@@ -118,9 +117,12 @@ end
 
 function Hub.Base64Decode(data)
 	data = string.gsub(data, '[^' .. b64Chars .. '=]', '')
+	if data == "" then return "" end
 	return (data:gsub('.', function(x)
 		if (x == '=') then return '' end
-		local r, f = '', (b64Chars:find(x) - 1)
+		local pos = b64Chars:find(x, 1, true)
+		if not pos then return '' end
+		local r, f = '', (pos - 1)
 		for i = 6, 1, -1 do r = r .. (f % 2^i - f % 2^(i - 1) > 0 and '1' or '0') end
 		return r
 	end):gsub('%d%d%d%d%d%d%d%d', function(x)
