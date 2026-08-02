@@ -20,6 +20,8 @@ local Stats = Hub.Stats
 local CollectedCoins = Hub.CollectedCoins
 local VisualSelectedBots = Hub.VisualSelectedBots
 
+local CoinESPBoxes = {}
+
 -----------------------------------
 -- SMOOTH TWEENING SHERIFF SHOOTER
 -----------------------------------
@@ -30,6 +32,11 @@ local function shootMurdererLooped(murdPlayer)
 
 	task.spawn(function()
 		while Cache.Connections["BotSyncActive"] do
+			-- Check if player is still Sheriff
+			if Hub.GetLocalPlayerRole and Hub.GetLocalPlayerRole() ~= "SHERIFF" then
+				break
+			end
+
 			local char = LocalPlayer.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
 			local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -177,7 +184,7 @@ function Hub.StartCoinFarm(state)
 			local shortestDist = math.huge
 
 			for _, coin in ipairs(coins) do
-				if coin and coin.Parent then
+				if coin and coin.Parent and not CollectedCoins[coin] then
 					local dist = (hrp.Position - coin.Position).Magnitude
 					if dist < shortestDist then
 						shortestDist = dist
@@ -187,8 +194,6 @@ function Hub.StartCoinFarm(state)
 			end
 
 			if closestCoin and closestCoin.Parent then
-				CollectedCoins[closestCoin] = true
-
 				local targetCFrame = closestCoin.CFrame
 				if Cache.Use5YOffset then
 					targetCFrame = targetCFrame - Vector3.new(0, Cache.YOffset or 2, 0)
@@ -207,6 +212,8 @@ function Hub.StartCoinFarm(state)
 				local startTime = tick()
 				while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and Cache.Connections["CoinFarmActive"] and not Hub.IsPlayerInLobby(hrp) do
 					if (hrp.Position - targetCFrame.Position).Magnitude <= 0.8 then
+						-- Mark as collected ONLY after successfully arriving at coin
+						CollectedCoins[closestCoin] = true
 						pcall(function() tween:Cancel() end)
 						break
 					end
@@ -234,10 +241,11 @@ end
 -- COIN ESP HIGHLIGHTS
 -----------------------------------
 function Hub.StartCoinESP(state)
-	Cache.Connections["ExpandHitboxes"] = state
+	Cache.Connections["CoinESPActive"] = state
+
 	if state then
 		task.spawn(function()
-			while Cache.Connections["ExpandHitboxes"] do
+			while Cache.Connections["CoinESPActive"] do
 				local coins = Hub.GetCoins()
 				if #coins > 0 then
 					for _, coinPart in ipairs(coins) do
@@ -250,6 +258,7 @@ function Hub.StartCoinESP(state)
 								box.LineThickness = 0.05
 								box.Transparency = 0.4
 								box.Parent = coinPart
+								table.insert(CoinESPBoxes, box)
 							end
 						end
 					end
@@ -258,10 +267,13 @@ function Hub.StartCoinESP(state)
 			end
 		end)
 	else
-		for _, descendant in ipairs(Workspace:GetDescendants()) do
-			if descendant:FindFirstChild("DashboardBox") then
-				descendant.DashboardBox:Destroy()
+		-- Clean up tracked SelectionBox instances safely without scanning Workspace
+		for i = #CoinESPBoxes, 1, -1 do
+			local box = CoinESPBoxes[i]
+			if box and box.Parent then
+				box:Destroy()
 			end
+			table.remove(CoinESPBoxes, i)
 		end
 	end
 end
@@ -305,6 +317,7 @@ function Hub.StartBotSync(state)
 					Stats.AllReady = allSquadReady
 
 					local selfRole = Hub.GetLocalPlayerRole()
+					local isRoundActive = Hub.IsRoundActive and Hub.IsRoundActive() or false
 
 					if not allSquadReady then
 						Hub.SquadAllReadyTime = nil
@@ -313,14 +326,15 @@ function Hub.StartBotSync(state)
 						local elapsed = tick() - Hub.SquadAllReadyTime
 
 						if selfRole == "MURDERER" then
-							if (selfInLobby or selfFull) and not Hub.HasResetThisRound then
+							if isRoundActive and (selfInLobby or selfFull) and not Hub.HasResetThisRound then
 								Hub.HasResetThisRound = true
 								hum.Health = 0
 								Hub.SquadAllReadyTime = nil
 							end
 
 						elseif selfRole == "INNOCENT" then
-							if elapsed >= 8 and not Hub.HasResetThisRound then
+							-- Prevent auto-reset loop during lobby/intermission phase
+							if isRoundActive and elapsed >= 8 and not Hub.HasResetThisRound then
 								local _, mapAlive = Hub.GetAlivePlayers()
 								if #mapAlive > 0 and (selfInLobby or selfFull) then
 									Hub.HasResetThisRound = true
@@ -329,6 +343,9 @@ function Hub.StartBotSync(state)
 								else
 									Hub.SquadAllReadyTime = nil
 								end
+							elseif not isRoundActive then
+								-- Reset timer while waiting in lobby
+								Hub.SquadAllReadyTime = nil
 							end
 
 						elseif selfRole == "SHERIFF" then
