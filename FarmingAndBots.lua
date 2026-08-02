@@ -30,10 +30,6 @@ local function shootMurdererLooped(murdPlayer)
 
 	task.spawn(function()
 		while Cache.Connections["BotSyncActive"] do
-			if Hub.GetLocalPlayerRole and Hub.GetLocalPlayerRole() ~= "SHERIFF" then
-				break
-			end
-
 			local char = LocalPlayer.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
 			local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -180,7 +176,7 @@ function Hub.StartCoinFarm(state)
 			local closestCoin = nil
 			local shortestDist = math.huge
 
-			-- Ignore coins that were already marked as collected so we don't re-target lingering parts
+			-- Filter out coins already marked in CollectedCoins
 			for _, coin in ipairs(coins) do
 				if coin and coin.Parent and not CollectedCoins[coin] then
 					local dist = (hrp.Position - coin.Position).Magnitude
@@ -192,7 +188,7 @@ function Hub.StartCoinFarm(state)
 			end
 
 			if closestCoin and closestCoin.Parent then
-				-- IMMEDIATELY mark coin as collected so the next loop iteration instantly ignores it
+				-- Mark coin immediately so the next loop instantly skips it
 				CollectedCoins[closestCoin] = true
 
 				local targetCFrame = closestCoin.CFrame
@@ -311,7 +307,6 @@ function Hub.StartBotSync(state)
 					Stats.AllReady = allSquadReady
 
 					local selfRole = Hub.GetLocalPlayerRole()
-					local isRoundActive = Hub.IsRoundActive and Hub.IsRoundActive() or false
 
 					if not allSquadReady then
 						Hub.SquadAllReadyTime = nil
@@ -319,16 +314,18 @@ function Hub.StartBotSync(state)
 						Hub.SquadAllReadyTime = Hub.SquadAllReadyTime or tick()
 						local elapsed = tick() - Hub.SquadAllReadyTime
 
+						-- Murderer resets immediately if in lobby
 						if selfRole == "MURDERER" then
-							if isRoundActive and (selfInLobby or selfFull) and not Hub.HasResetThisRound then
+							if (selfInLobby or selfFull) and not Hub.HasResetThisRound then
 								Hub.HasResetThisRound = true
 								hum.Health = 0
 								Hub.SquadAllReadyTime = nil
 							end
 
+						-- Innocent resets after 8s ONLY if a murderer exists (active round)
 						elseif selfRole == "INNOCENT" then
-							-- Prevent auto-resetting every 8 seconds while waiting in the lobby
-							if isRoundActive and elapsed >= 8 and not Hub.HasResetThisRound then
+							local publicMurd = Hub.GetPublicMurderer()
+							if publicMurd and elapsed >= 8 and not Hub.HasResetThisRound then
 								local _, mapAlive = Hub.GetAlivePlayers()
 								if #mapAlive > 0 and (selfInLobby or selfFull) then
 									Hub.HasResetThisRound = true
@@ -337,7 +334,7 @@ function Hub.StartBotSync(state)
 								else
 									Hub.SquadAllReadyTime = nil
 								end
-							elseif not isRoundActive then
+							elseif not publicMurd then
 								Hub.SquadAllReadyTime = nil
 							end
 
