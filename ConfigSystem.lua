@@ -20,15 +20,43 @@ local UIControls = Hub.UIControls
 local VisualSelectedBots = Hub.VisualSelectedBots
 
 -----------------------------------
+-- HELPER: USERNAME LIST PARSER
+-----------------------------------
+local function ParseUsernamesText(text)
+	local usernames = {}
+	if type(text) ~= "string" then return usernames end
+	
+	-- Split by comma, newline, or whitespace
+	for name in text:gmatch("[^,\r\n%s]+") do
+		local cleanName = name:match("^%s*(.-)%s*$")
+		if cleanName and #cleanName > 0 then
+			table.insert(usernames, cleanName)
+		end
+	end
+	return usernames
+end
+
+-----------------------------------
 -- CONFIG MANAGEMENT HELPERS
 -----------------------------------
 function Hub.GetSerializedConfig()
-	local botsToSave = {}
-	for userId, isSelected in pairs(VisualSelectedBots) do
-		if isSelected then
-			local p = Players:GetPlayerByUserId(userId)
-			local name = p and p.Name or "Unknown"
-			table.insert(botsToSave, {UserId = userId, Name = name})
+	-- Read raw text from the Bot Usernames Textbox if available
+	local rawText = Hub.BotUsernamesInputText or Hub.MasterBotUsernamesText or ""
+	local masterList = ParseUsernamesText(rawText)
+	
+	-- Fallback: If textbox was empty, gather names from currently selected bots + LocalPlayer
+	if #masterList == 0 then
+		for userId, isSelected in pairs(VisualSelectedBots) do
+			if isSelected then
+				local p = Players:GetPlayerByUserId(userId)
+				if p and p.Name then
+					table.insert(masterList, p.Name)
+				end
+			end
+		end
+		-- Also ensure creator's name is in the saved list
+		if LocalPlayer and LocalPlayer.Name and not table.find(masterList, LocalPlayer.Name) then
+			table.insert(masterList, LocalPlayer.Name)
 		end
 	end
 	
@@ -44,7 +72,8 @@ function Hub.GetSerializedConfig()
 			YOffset = Cache.YOffset,
 			Use5YOffset = Cache.Use5YOffset
 		},
-		SelectedBots = botsToSave
+		MasterUsernames = masterList,
+		MasterUsernamesRaw = rawText
 	}
 end
 
@@ -106,18 +135,44 @@ function Hub.LoadConfigFromTable(data)
 		end
 	end
 
-	-- Load Selected Bots
-	if data.SelectedBots then
-		table.clear(VisualSelectedBots)
+	-- Load Selected Bots from Master Usernames List
+	local usernamesToMatch = data.MasterUsernames
+	if not usernamesToMatch and data.SelectedBots then
+		usernamesToMatch = {}
 		for _, botInfo in ipairs(data.SelectedBots) do
-			VisualSelectedBots[botInfo.UserId] = true
+			if type(botInfo) == "table" and botInfo.Name then
+				table.insert(usernamesToMatch, botInfo.Name)
+			elseif type(botInfo) == "string" then
+				table.insert(usernamesToMatch, botInfo)
+			end
+		end
+	end
+
+	if usernamesToMatch then
+		table.clear(VisualSelectedBots)
+		
+		-- Restore raw textbox string
+		if data.MasterUsernamesRaw and #data.MasterUsernamesRaw > 0 then
+			Hub.BotUsernamesInputText = data.MasterUsernamesRaw
+		else
+			Hub.BotUsernamesInputText = table.concat(usernamesToMatch, ", ")
+		end
+		
+		-- Match any player in current server against the master list (excluding itself)
+		for _, name in ipairs(usernamesToMatch) do
+			local cleanTarget = name:lower():gsub("%s+", "")
 			for _, player in ipairs(Players:GetPlayers()) do
-				if player.Name == botInfo.Name or player.UserId == botInfo.UserId then
-					VisualSelectedBots[player.UserId] = true
+				if player ~= LocalPlayer then
+					local playerName = player.Name:lower():gsub("%s+", "")
+					if playerName == cleanTarget then
+						VisualSelectedBots[player.UserId] = true
+					end
 				end
 			end
 		end
+		
 		if Hub.RefreshBotList then pcall(Hub.RefreshBotList) end
+		if Hub.UpdateBotTextboxUI then pcall(Hub.UpdateBotTextboxUI) end
 	end
 end
 
@@ -125,7 +180,7 @@ function Hub.GetConfigsManifest()
 	local manifest = {}
 	pcall(function()
 		if readfile and isfile and isfile("Dashboard_ConfigsManifest.json") then
-			manifest = HttpService:JSONDecode(readfile("Dashboard_ConfigsManifest.json"))
+			manifest = HttpService:JSONEncode(readfile("Dashboard_ConfigsManifest.json"))
 		end
 	end)
 	return manifest
