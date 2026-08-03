@@ -97,6 +97,57 @@ end
 Hub.ShootMurdererLooped = shootMurdererLooped
 
 -----------------------------------
+-- HIGH-SPEED MURDERER FLINGER
+-----------------------------------
+local isFlingingActive = false
+local function flingMurdererLooped(murdPlayer)
+	if isFlingingActive or not murdPlayer then return end
+	isFlingingActive = true
+
+	task.spawn(function()
+		while Cache.Connections["BotSyncActive"] do
+			local char = LocalPlayer.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+			local murdChar = murdPlayer and murdPlayer.Character
+			local murdHRP = murdChar and murdChar:FindFirstChild("HumanoidRootPart")
+			local murdHum = murdChar and murdChar:FindFirstChildOfClass("Humanoid")
+
+			if not hrp or not murdHRP or not hum or hum.Health <= 0 or not murdHum or murdHum.Health <= 0 then
+				break
+			end
+
+			Hub.SetNoclip(true)
+
+			-- Create high angular velocity force to fling the target
+			local bav = hrp:FindFirstChild("FlingAngularVelocity")
+			if not bav then
+				bav = Instance.new("BodyAngularVelocity")
+				bav.Name = "FlingAngularVelocity"
+				bav.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+				bav.AngularVelocity = Vector3.new(99999, 99999, 99999)
+				bav.Parent = hrp
+			end
+
+			-- Teleport onto Murderer with erratic offsets to induce physical collision fling
+			hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+			hrp.CFrame = murdHRP.CFrame * CFrame.new(math.random(-1, 1), 0, math.random(-1, 1))
+
+			RunService.Heartbeat:Wait()
+		end
+
+		-- Cleanup fling force on exit
+		local char = LocalPlayer.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:FindFirstChild("FlingAngularVelocity") then
+			pcall(function() hrp.FlingAngularVelocity:Destroy() end)
+		end
+		isFlingingActive = false
+	end)
+end
+
+-----------------------------------
 -- HELPER: GET SQUAD BOTS
 -----------------------------------
 local function GetOtherSquadHRPs()
@@ -241,7 +292,7 @@ function Hub.StartCoinFarm(state)
 
 				local distance = (hrp.Position - targetCFrame.Position).Magnitude
 				local speed = math.clamp(Cache.TweenSpeed or 20, 10, 100)
-				local duration = distance / speed -- Natural duration without arbitrary 0.12s floor
+				local duration = distance / speed
 
 				local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 				local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
@@ -251,7 +302,6 @@ function Hub.StartCoinFarm(state)
 
 				local startTime = tick()
 				while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and Cache.Connections["CoinFarmActive"] and not Hub.IsPlayerInLobby(hrp) do
-					-- Touch threshold set to 1.2 studs to trigger MM2 touch hitbox reliably without overshooting
 					if (hrp.Position - targetCFrame.Position).Magnitude <= 1.2 then
 						pcall(function() tween:Cancel() end)
 						break
@@ -265,7 +315,6 @@ function Hub.StartCoinFarm(state)
 					Cache.CurrentTween = nil
 				end
 				
-				-- Replaced 0.08s standing delay with 1 heartbeat frame for instant transition
 				RunService.Heartbeat:Wait()
 			end
 		end
@@ -325,6 +374,14 @@ function Hub.StartBotSync(state)
 			while Cache.Connections["BotSyncActive"] do
 				task.wait(0.5)
 
+				local publicMurd = Hub.GetPublicMurderer()
+
+				-- Intermission/Lobby transition check: Clear reset flags when no public murderer exists
+				if not publicMurd then
+					Hub.HasResetThisRound = false
+					Hub.SquadAllReadyTime = nil
+				end
+
 				local char = LocalPlayer.Character
 				local hrp = char and char:FindFirstChild("HumanoidRootPart")
 				local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -360,7 +417,7 @@ function Hub.StartBotSync(state)
 						Hub.SquadAllReadyTime = Hub.SquadAllReadyTime or tick()
 						local elapsed = tick() - Hub.SquadAllReadyTime
 
-						-- Murderer resets immediately if all squad members are in lobby
+						-- 1. Murderer resets immediately if squad is ready in lobby
 						if selfRole == "MURDERER" then
 							if (selfInLobby or selfFull) and not Hub.HasResetThisRound then
 								Hub.HasResetThisRound = true
@@ -368,25 +425,26 @@ function Hub.StartBotSync(state)
 								Hub.SquadAllReadyTime = nil
 							end
 
-						-- Innocent resets after 8s ONLY if a murderer exists (active round)
+						-- 2. Innocent Logic
 						elseif selfRole == "INNOCENT" then
-							local publicMurd = Hub.GetPublicMurderer()
-							if publicMurd and elapsed >= 8 and not Hub.HasResetThisRound then
-								local _, mapAlive = Hub.GetAlivePlayers()
-								if #mapAlive > 0 and (selfInLobby or selfFull) then
-									Hub.HasResetThisRound = true
-									hum.Health = 0
-									Hub.SquadAllReadyTime = nil
-								else
-									Hub.SquadAllReadyTime = nil
+							if publicMurd then
+								-- Perform EXACTLY ONE reset at the 8-second mark
+								if elapsed >= 8 and not Hub.HasResetThisRound then
+									local _, mapAlive = Hub.GetAlivePlayers()
+									if #mapAlive > 0 and (selfInLobby or selfFull) then
+										Hub.HasResetThisRound = true
+										hum.Health = 0
+										Hub.SquadAllReadyTime = nil
+									end
+								-- If bot already reset, respawned in lobby, but Murderer is STILL alive -> FLING!
+								elseif Hub.HasResetThisRound and hum.Health > 0 then
+									flingMurdererLooped(publicMurd)
 								end
-							elseif not publicMurd then
-								Hub.SquadAllReadyTime = nil
 							end
 
+						-- 3. Sheriff Logic
 						elseif selfRole == "SHERIFF" then
 							if elapsed >= 3 then
-								local publicMurd = Hub.GetPublicMurderer()
 								local totalAlive, _ = Hub.GetAlivePlayers()
 
 								if #totalAlive <= 2 and publicMurd and table.find(totalAlive, publicMurd) then
