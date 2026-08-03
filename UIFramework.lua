@@ -1359,7 +1359,7 @@ function populateConfigsDropdown()
 	end
 
 	local manifest = Hub.GetConfigsManifest and Hub.GetConfigsManifest() or {}
-	if #manifest == 0 then
+	if type(manifest) ~= "table" or #manifest == 0 then
 		local lbl = Instance.new("TextLabel")
 		lbl.Size = UDim2.new(1, 0, 0, 28)
 		lbl.BackgroundTransparency = 1
@@ -1419,7 +1419,7 @@ loadFileBtn.MouseButton1Click:Connect(function()
 		end)
 		if success and content then
 			local dataSuccess, parsed = pcall(function()
-				return HttpService:JSONEncode(content)
+				return HttpService:JSONDecode(content)
 			end)
 			if dataSuccess and parsed then
 				if Hub.LoadConfigFromTable then Hub.LoadConfigFromTable(parsed) end
@@ -1474,7 +1474,7 @@ loadShareConfigBtn.MouseButton1Click:Connect(function()
 	end)
 	if decodedSuccess and decoded then
 		local dataSuccess, parsed = pcall(function()
-			return HttpService:JSONEncode(decoded)
+			return HttpService:JSONDecode(decoded)
 		end)
 		if dataSuccess and parsed then
 			if Hub.LoadConfigFromTable then Hub.LoadConfigFromTable(parsed) end
