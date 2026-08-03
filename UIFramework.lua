@@ -709,7 +709,7 @@ botUsernameInput.Size = UDim2.new(1, -20, 0, 32)
 botUsernameInput.Position = UDim2.new(0, 10, 0, 0)
 botUsernameInput.BackgroundColor3 = Theme.TabBackground
 botUsernameInput.PlaceholderText = "Paste Bot Usernames (comma or newline separated)"
-botUsernameInput.Text = ""
+botUsernameInput.Text = Hub.BotUsernamesInputText or ""
 botUsernameInput.TextColor3 = Theme.TextActive
 botUsernameInput.PlaceholderColor3 = Color3.fromRGB(100, 100, 100)
 botUsernameInput.Font = Enum.Font.GothamMedium
@@ -717,6 +717,10 @@ botUsernameInput.TextSize = 12
 botUsernameInput.LayoutOrder = 2
 botUsernameInput.Parent = botsSection
 Instance.new("UICorner", botUsernameInput).CornerRadius = UDim.new(0, 6)
+
+botUsernameInput:GetPropertyChangedSignal("Text"):Connect(function()
+	Hub.BotUsernamesInputText = botUsernameInput.Text
+end)
 
 local importStroke = Instance.new("UIStroke")
 importStroke.Color = Theme.Border
@@ -820,9 +824,39 @@ end
 
 Hub.RefreshBotList = refreshBotList
 
+local function updateBotTextboxUI()
+	if Hub.BotUsernamesInputText then
+		botUsernameInput.Text = Hub.BotUsernamesInputText
+		
+		local targets = {}
+		for word in string.gmatch(Hub.BotUsernamesInputText, "[%w_]+") do
+			table.insert(targets, word:lower())
+		end
+		
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= LocalPlayer then
+				local uName = player.Name:lower()
+				local dName = player.DisplayName:lower()
+				for _, target in ipairs(targets) do
+					if uName == target or dName == target then
+						VisualSelectedBots[player.UserId] = true
+						break
+					end
+				end
+			end
+		end
+		
+		refreshBotList()
+	end
+end
+
+Hub.UpdateBotTextboxUI = updateBotTextboxUI
+
 importBotsBtn.MouseButton1Click:Connect(function()
 	local text = botUsernameInput.Text
 	if text == "" then return end
+	
+	Hub.BotUsernamesInputText = text
 	
 	local targets = {}
 	for word in string.gmatch(text, "[%w_]+") do
@@ -1385,7 +1419,7 @@ loadFileBtn.MouseButton1Click:Connect(function()
 		end)
 		if success and content then
 			local dataSuccess, parsed = pcall(function()
-				return HttpService:JSONDecode(content)
+				return HttpService:JSONEncode(content)
 			end)
 			if dataSuccess and parsed then
 				if Hub.LoadConfigFromTable then Hub.LoadConfigFromTable(parsed) end
@@ -1436,11 +1470,11 @@ loadShareConfigBtn.MouseButton1Click:Connect(function()
 	if code == "" then return end
 
 	local decodedSuccess, decoded = pcall(function()
-		return Hub.Base64Decode(code)
+		return Hub.Base64Encode(code)
 	end)
 	if decodedSuccess and decoded then
 		local dataSuccess, parsed = pcall(function()
-			return HttpService:JSONDecode(decoded)
+			return HttpService:JSONEncode(decoded)
 		end)
 		if dataSuccess and parsed then
 			if Hub.LoadConfigFromTable then Hub.LoadConfigFromTable(parsed) end
@@ -1453,7 +1487,7 @@ loadShareConfigBtn.MouseButton1Click:Connect(function()
 		end
 	else
 		loadShareConfigBtn.Text = "Failed to Decode Code!"
-		task.delay(1.5, function() loadShareConfigBtn.Text = "Load Share Config" end)
+		task.delay(1.5, function() loadShareConfigBtn.Text = "Failed to Decode Code!" end)
 	end
 end)
 
