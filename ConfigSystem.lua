@@ -75,7 +75,9 @@ end
 -----------------------------------
 function Hub.GetSerializedConfig()
 	local rawText = Hub.BotUsernamesInputText or Hub.MasterBotUsernamesText or ""
-	local masterList = ParseUsernamesText(rawText)
+	-- Sanitize newlines to spaces to prevent JSON control character errors
+	local cleanRawText = rawText:gsub("[\r\n]+", " "):gsub("%s+", " ")
+	local masterList = ParseUsernamesText(cleanRawText)
 	
 	if #masterList == 0 then
 		for userId, isSelected in pairs(VisualSelectedBots) do
@@ -104,7 +106,7 @@ function Hub.GetSerializedConfig()
 			Use5YOffset = Cache.Use5YOffset
 		},
 		MasterUsernames = masterList,
-		MasterUsernamesRaw = rawText
+		MasterUsernamesRaw = cleanRawText
 	}
 end
 
