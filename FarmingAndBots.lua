@@ -32,10 +32,10 @@ local function createFarmPlatform()
 
 	local part = Instance.new("Part")
 	part.Name = "LocalFarmPlatform"
-	part.Size = Vector3.new(8, 1, 8) -- 8x1x8 studs wide platform
-	part.Color = Color3.fromRGB(0, 0, 0) -- Solid black
+	part.Size = Vector3.new(8, 1, 8)
+	part.Color = Color3.fromRGB(0, 0, 0)
 	part.Material = Enum.Material.SmoothPlastic
-	part.Transparency = 0 -- Fully visible
+	part.Transparency = 0
 	part.CanCollide = true
 	part.Anchored = true
 	part.CastShadow = false
@@ -93,7 +93,7 @@ end
 Hub.GetPublicMurderer = GetPublicMurdererFoolproof
 
 -----------------------------------
--- SMOOTH TWEENING SHERIFF SHOOTER
+-- HARDCODED SHERIFF SHOOTER
 -----------------------------------
 local isShootingLoopActive = false
 local function shootMurdererLooped(murdPlayer)
@@ -128,12 +128,7 @@ local function shootMurdererLooped(murdPlayer)
 			local gun = char:FindFirstChild("Gun") or char:FindFirstChildWhichIsA("Tool")
 			if not gun or not (gun.Name:lower():find("gun") or gun.Name:lower():find("revolver")) then
 				if LocalPlayer:FindFirstChild("Backpack") then
-					for _, item in ipairs(LocalPlayer.Backpack:GetChildren()) do
-						if item:IsA("Tool") and (item.Name:lower():find("gun") or item.Name:lower():find("revolver")) then
-							gun = item
-							break
-						end
-					end
+					gun = LocalPlayer.Backpack:FindFirstChild("Gun") or LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool")
 				end
 			end
 
@@ -153,11 +148,11 @@ local function shootMurdererLooped(murdPlayer)
 
 				pcall(function()
 					gun:Activate()
-					for _, v in ipairs(gun:GetDescendants()) do
-						if v:IsA("RemoteEvent") then
-							pcall(function() v:FireServer(murdHRP.Position, murdHRP.Position, murdHRP, murdHRP.Position) end)
-							pcall(function() v:FireServer(murdHRP.Position) end)
-						end
+					
+					local shootRemote = gun:FindFirstChild("Shoot", true)
+					if shootRemote and shootRemote:IsA("RemoteEvent") then
+						pcall(function() shootRemote:FireServer(murdHRP.Position, murdHRP.Position, murdHRP, murdHRP.Position) end)
+						pcall(function() shootRemote:FireServer(murdHRP.Position) end)
 					end
 				end)
 
@@ -314,11 +309,9 @@ function Hub.StartCoinFarm(state)
 
 			Hub.SetNoclip(true)
 
-			-- Position the local black platform directly under feet
 			local plat = createFarmPlatform()
 			plat.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
 
-			-- Keep camera subject attached to humanoid
 			local cam = Workspace.CurrentCamera
 			if cam and cam.CameraSubject ~= hum then
 				cam.CameraSubject = hum
@@ -373,8 +366,10 @@ function Hub.StartCoinFarm(state)
 
 			if closestCoin and closestCoin.Parent then
 				CollectedCoins[closestCoin] = true
+				
+				-- Increment session coins directly upon targeting/collecting a coin
+				Hub.SessionCoins = (Hub.SessionCoins or 0) + 1
 
-				-- Original simple Y-Offset calculation
 				local targetCFrame = closestCoin.CFrame
 				if Cache.Use5YOffset then
 					targetCFrame = targetCFrame - Vector3.new(0, Cache.YOffset or 2, 0)
@@ -392,7 +387,6 @@ function Hub.StartCoinFarm(state)
 
 				local startTime = tick()
 				while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and Cache.Connections["CoinFarmActive"] and not Hub.IsPlayerInLobby(hrp) do
-					-- Move black platform continuously under feet during flight
 					if farmPlatform and farmPlatform.Parent then
 						farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
 					end
