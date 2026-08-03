@@ -366,9 +366,6 @@ function Hub.StartCoinFarm(state)
 
 			if closestCoin and closestCoin.Parent then
 				CollectedCoins[closestCoin] = true
-				
-				-- Increment session coins directly upon targeting/collecting a coin
-				Hub.SessionCoins = (Hub.SessionCoins or 0) + 1
 
 				local targetCFrame = closestCoin.CFrame
 				if Cache.Use5YOffset then
