@@ -21,6 +21,51 @@ local CollectedCoins = Hub.CollectedCoins
 local VisualSelectedBots = Hub.VisualSelectedBots
 
 -----------------------------------
+-- FOOLPROOF MURDERER DETECTOR
+-----------------------------------
+local function IsMurdererWeapon(tool)
+	if not tool or not tool:IsA("Tool") then return false end
+	local nameLower = tool.Name:lower()
+	
+	-- Check standard name matches
+	if nameLower:find("knife") or nameLower:find("blade") or nameLower:find("dagger") or nameLower == "bat" then
+		return true
+	end
+
+	-- Check internal MM2 Murderer tool components (works on custom skins like Harvester/Bat)
+	if tool:FindFirstChild("KnifeServer") or tool:FindFirstChild("KnifeClient") or tool:FindFirstChild("LockOn") then
+		return true
+	end
+
+	return false
+end
+
+local function GetPublicMurdererFoolproof()
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Character then
+			-- Check currently equipped tool
+			local equipped = player.Character:FindFirstChildOfClass("Tool")
+			if equipped and IsMurdererWeapon(equipped) then
+				return player
+			end
+			-- Check backpack items
+			local backpack = player:FindFirstChild("Backpack")
+			if backpack then
+				for _, item in ipairs(backpack:GetChildren()) do
+					if IsMurdererWeapon(item) then
+						return player
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+-- Override Hub's murderer detection with foolproof scanner
+Hub.GetPublicMurderer = GetPublicMurdererFoolproof
+
+-----------------------------------
 -- SMOOTH TWEENING SHERIFF SHOOTER
 -----------------------------------
 local isShootingLoopActive = false
@@ -40,6 +85,11 @@ local function shootMurdererLooped(murdPlayer)
 
 			if not hrp or not murdHRP or not hum or hum.Health <= 0 or not murdHum or murdHum.Health <= 0 then 
 				break 
+			end
+
+			-- Stop shooting if Murderer is already knocked into the void
+			if murdHRP.Position.Y < -20 then
+				break
 			end
 
 			local totalAlive, _ = Hub.GetAlivePlayers()
@@ -97,7 +147,7 @@ end
 Hub.ShootMurdererLooped = shootMurdererLooped
 
 -----------------------------------
--- HIGH-SPEED MURDERER FLINGER
+-- DOWNWARD VOID FLINGER
 -----------------------------------
 local isFlingingActive = false
 local function flingMurdererLooped(murdPlayer)
@@ -118,30 +168,35 @@ local function flingMurdererLooped(murdPlayer)
 				break
 			end
 
-			Hub.SetNoclip(true)
-
-			-- Create high angular velocity force to fling the target
-			local bav = hrp:FindFirstChild("FlingAngularVelocity")
-			if not bav then
-				bav = Instance.new("BodyAngularVelocity")
-				bav.Name = "FlingAngularVelocity"
-				bav.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-				bav.AngularVelocity = Vector3.new(99999, 99999, 99999)
-				bav.Parent = hrp
+			-- Safety Check: Stop flinging if Murderer is already knocked below the map / into the void
+			if murdHRP.Position.Y < -20 then
+				break
 			end
 
-			-- Teleport onto Murderer with erratic offsets to induce physical collision fling
-			hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-			hrp.CFrame = murdHRP.CFrame * CFrame.new(math.random(-1, 1), 0, math.random(-1, 1))
+			Hub.SetNoclip(true)
+
+			-- Downward Slam Physics Setup
+			hum.PlatformStand = true
+			hrp.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
+			
+			-- High Angular Velocity combined with Downward Linear Impulse
+			hrp.AssemblyAngularVelocity = Vector3.new(0, 999999, 0)
+			hrp.AssemblyLinearVelocity = Vector3.new(0, -2500, 0)
+
+			-- Position 2.5 studs ABOVE the Murderer to slam them straight down into the floor/void
+			hrp.CFrame = murdHRP.CFrame * CFrame.new(math.random(-0.5, 0.5), 2.5, math.random(-0.5, 0.5))
 
 			RunService.Heartbeat:Wait()
 		end
 
-		-- Cleanup fling force on exit
+		-- Restore normal character state on exit
 		local char = LocalPlayer.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		if hrp and hrp:FindFirstChild("FlingAngularVelocity") then
-			pcall(function() hrp.FlingAngularVelocity:Destroy() end)
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then hum.PlatformStand = false end
+		if hrp then 
+			hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0) 
+			hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 		end
 		isFlingingActive = false
 	end)
@@ -209,6 +264,8 @@ function Hub.StartCoinFarm(state)
 				continue
 			end
 
+			Hub.WasOnMapThisRound = true
+
 			local full = Hub.IsBagFull()
 			LocalPlayer:SetAttribute("BagFull", full)
 			
@@ -232,6 +289,12 @@ function Hub.StartCoinFarm(state)
 
 			Hub.SetNoclip(true)
 
+			-- Keep camera subject attached to character
+			local cam = Workspace.CurrentCamera
+			if cam and cam.CameraSubject ~= hum then
+				cam.CameraSubject = hum
+			end
+
 			local coins = Hub.GetCoins()
 
 			if #coins == 0 then
@@ -248,15 +311,13 @@ function Hub.StartCoinFarm(state)
 			local shortestDist = math.huge
 
 			for _, coin in ipairs(coins) do
-				-- Ignore coins marked or near world origin (0,0,0)
 				if coin and coin.Parent and not CollectedCoins[coin] and coin.Position.Magnitude > 10 then
 					local dist = (hrp.Position - coin.Position).Magnitude
 
-					-- Smart Proximity Filtering: Check if another bot is already significantly closer
 					local anotherBotCloser = false
 					for _, bHRP in ipairs(otherBots) do
 						local botDist = (bHRP.Position - coin.Position).Magnitude
-						if botDist + 6 < dist then -- If another bot is at least 6 studs closer, skip this coin
+						if botDist + 6 < dist then
 							anotherBotCloser = true
 							break
 						end
@@ -269,7 +330,6 @@ function Hub.StartCoinFarm(state)
 				end
 			end
 
-			-- Fallback: If all coins were skipped due to proximity filter, target closest anyway
 			if not closestCoin then
 				for _, coin in ipairs(coins) do
 					if coin and coin.Parent and not CollectedCoins[coin] and coin.Position.Magnitude > 10 then
@@ -286,8 +346,20 @@ function Hub.StartCoinFarm(state)
 				CollectedCoins[closestCoin] = true
 
 				local targetCFrame = closestCoin.CFrame
+				
+				-- RAYCAST GROUND CHECK: Only apply Y-Offset if there is solid floor beneath the coin
 				if Cache.Use5YOffset then
-					targetCFrame = targetCFrame - Vector3.new(0, Cache.YOffset or 2, 0)
+					local rayParams = RaycastParams.new()
+					rayParams.FilterType = Enum.RaycastFilterType.Exclude
+					rayParams.FilterDescendantsInstances = {char, Workspace:FindFirstChild("CoinContainer", true) or Workspace:FindFirstChild("Coin_Container", true)}
+
+					local rayResult = Workspace:Raycast(closestCoin.Position, Vector3.new(0, -6, 0), rayParams)
+					
+					-- Only offset if a solid floor was detected underneath
+					if rayResult and rayResult.Instance then
+						local safeYOffset = math.clamp(Cache.YOffset or 2.5, 1, 2.5)
+						targetCFrame = targetCFrame - Vector3.new(0, safeYOffset, 0)
+					end
 				end
 
 				local distance = (hrp.Position - targetCFrame.Position).Magnitude
@@ -376,9 +448,11 @@ function Hub.StartBotSync(state)
 
 				local publicMurd = Hub.GetPublicMurderer()
 
-				-- Intermission/Lobby transition check: Clear reset flags when no public murderer exists
+				-- Intermission check: Clear round flags when no active murderer exists
 				if not publicMurd then
 					Hub.HasResetThisRound = false
+					Hub.WasOnMapThisRound = false
+					Hub.DiedThisRound = false
 					Hub.SquadAllReadyTime = nil
 				end
 
@@ -386,11 +460,15 @@ function Hub.StartBotSync(state)
 				local hrp = char and char:FindFirstChild("HumanoidRootPart")
 				local hum = char and char:FindFirstChildOfClass("Humanoid")
 
+				if hum and hum.Health <= 0 and Hub.WasOnMapThisRound then
+					Hub.DiedThisRound = true
+				end
+
 				if hum and hum.Health > 0 and hrp then
 					local selfInLobby = Hub.IsPlayerInLobby(hrp)
 					local selfFull = Hub.IsBagFull()
 
-					local allSquadReady = selfInLobby or (selfFull and selfInLobby) or (hum.Health <= 0)
+					local allSquadReady = selfInLobby or (selfFull and selfInLobby) or Hub.DiedThisRound or (hum.Health <= 0)
 					local selectedCount = 0
 					local readyCount = allSquadReady and 1 or 0
 
@@ -427,8 +505,8 @@ function Hub.StartBotSync(state)
 
 						-- 2. Innocent Logic
 						elseif selfRole == "INNOCENT" then
-							if publicMurd then
-								-- Perform EXACTLY ONE reset at the 8-second mark
+							if publicMurd and not Hub.DiedThisRound then
+								-- Execute EXACTLY ONE reset at the 8-second mark if stuck in lobby
 								if elapsed >= 8 and not Hub.HasResetThisRound then
 									local _, mapAlive = Hub.GetAlivePlayers()
 									if #mapAlive > 0 and (selfInLobby or selfFull) then
@@ -436,7 +514,7 @@ function Hub.StartBotSync(state)
 										hum.Health = 0
 										Hub.SquadAllReadyTime = nil
 									end
-								-- If bot already reset, respawned in lobby, but Murderer is STILL alive -> FLING!
+								-- If bot already reset, respawned in lobby, but Murderer is STILL alive -> FLING DOWNWARD!
 								elseif Hub.HasResetThisRound and hum.Health > 0 then
 									flingMurdererLooped(publicMurd)
 								end
