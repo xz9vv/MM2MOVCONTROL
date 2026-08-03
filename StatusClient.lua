@@ -16,13 +16,61 @@ local API_URL_2 = "http://localhost:8080/api"
 
 local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request or (fluxus and fluxus.request)
 
--- Initialize session coins to 0 on launch
 Hub.SessionCoins = Hub.SessionCoins or 0
 Hub.BotStatus = Hub.BotStatus or "FARMING"
 
+local lastBagValue = 0
+
+-- Exact DarkDex MM2 Bag TextLabel Reader
+local function getExactBagCoinCount()
+	local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+	if playerGui then
+		local mainGui = playerGui:FindFirstChild("MainGUI")
+		if mainGui then
+			local gameFrame = mainGui:FindFirstChild("Game")
+			if gameFrame then
+				local coinBags = gameFrame:FindFirstChild("CoinBags")
+				if coinBags then
+					local container = coinBags:FindFirstChild("Container")
+					if container then
+						local coin = container:FindFirstChild("Coin")
+						if coin then
+							local currencyFrame = coin:FindFirstChild("CurrencyFrame")
+							if currencyFrame then
+								local icon = currencyFrame:FindFirstChild("Icon")
+								if icon then
+									local coinsLabel = icon:FindFirstChild("Coins")
+									if coinsLabel and coinsLabel:IsA("TextLabel") then
+										local num = tonumber(coinsLabel.Text:match("%d+"))
+										if num then return num end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return 0
+end
+
+-- Monitor real-time coin bag increases during active rounds
+task.spawn(function()
+	while task.wait(0.2) do
+		local currentBag = getExactBagCoinCount()
+		if currentBag > lastBagValue then
+			local gained = currentBag - lastBagValue
+			Hub.SessionCoins = Hub.SessionCoins + gained
+			print("[StatusClient] Bag +" .. tostring(gained) .. "c | Session Total: " .. tostring(Hub.SessionCoins) .. "c")
+		end
+		lastBagValue = currentBag
+	end
+end)
+
 -- Send Periodic Heartbeats to Python Server
 task.spawn(function()
-	task.wait(2) -- Wait for player to load into server
+	task.wait(2)
 	print("[StatusClient] Heartbeat service active for: " .. tostring(LocalPlayer.Name))
 
 	while task.wait(4) do
@@ -70,8 +118,6 @@ task.spawn(function()
 
 			if result and (result.StatusCode == 200 or result.StatusMessage == "OK") then
 				print("[StatusClient SUCCESS] Sent Heartbeat -> User: " .. LocalPlayer.Name .. " | Coins: " .. tostring(Hub.SessionCoins or 0) .. "c | Status: " .. tostring(Hub.BotStatus))
-			else
-				warn("[StatusClient WARNING] Heartbeat HTTP failed/refused by Python server!")
 			end
 		end
 	end
