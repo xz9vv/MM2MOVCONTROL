@@ -97,6 +97,25 @@ end
 Hub.ShootMurdererLooped = shootMurdererLooped
 
 -----------------------------------
+-- HELPER: GET SQUAD BOTS
+-----------------------------------
+local function GetOtherSquadHRPs()
+	local hrps = {}
+	for userId, isSelected in pairs(VisualSelectedBots) do
+		if isSelected then
+			local botPlayer = Players:GetPlayerByUserId(userId)
+			if botPlayer and botPlayer ~= LocalPlayer and botPlayer.Character then
+				local bHRP = botPlayer.Character:FindFirstChild("HumanoidRootPart")
+				if bHRP then
+					table.insert(hrps, bHRP)
+				end
+			end
+		end
+	end
+	return hrps
+end
+
+-----------------------------------
 -- COIN FARM TOGGLE & LOOP
 -----------------------------------
 function Hub.StartCoinFarm(state)
@@ -173,22 +192,46 @@ function Hub.StartCoinFarm(state)
 				continue
 			end
 
+			local otherBots = GetOtherSquadHRPs()
 			local closestCoin = nil
 			local shortestDist = math.huge
 
-			-- Filter out coins already marked in CollectedCoins
 			for _, coin in ipairs(coins) do
-				if coin and coin.Parent and not CollectedCoins[coin] then
+				-- Ignore coins marked or near world origin (0,0,0)
+				if coin and coin.Parent and not CollectedCoins[coin] and coin.Position.Magnitude > 10 then
 					local dist = (hrp.Position - coin.Position).Magnitude
-					if dist < shortestDist then
+
+					-- Smart Proximity Filtering: Check if another bot is already significantly closer
+					local anotherBotCloser = false
+					for _, bHRP in ipairs(otherBots) do
+						local botDist = (bHRP.Position - coin.Position).Magnitude
+						if botDist + 6 < dist then -- If another bot is at least 6 studs closer, skip this coin
+							anotherBotCloser = true
+							break
+						end
+					end
+
+					if not anotherBotCloser and dist < shortestDist then
 						shortestDist = dist
 						closestCoin = coin
 					end
 				end
 			end
 
+			-- Fallback: If all coins were skipped due to proximity filter, target closest anyway
+			if not closestCoin then
+				for _, coin in ipairs(coins) do
+					if coin and coin.Parent and not CollectedCoins[coin] and coin.Position.Magnitude > 10 then
+						local dist = (hrp.Position - coin.Position).Magnitude
+						if dist < shortestDist then
+							shortestDist = dist
+							closestCoin = coin
+						end
+					end
+				end
+			end
+
 			if closestCoin and closestCoin.Parent then
-				-- Mark coin immediately so the next loop instantly skips it
 				CollectedCoins[closestCoin] = true
 
 				local targetCFrame = closestCoin.CFrame
@@ -198,7 +241,7 @@ function Hub.StartCoinFarm(state)
 
 				local distance = (hrp.Position - targetCFrame.Position).Magnitude
 				local speed = math.clamp(Cache.TweenSpeed or 20, 10, 100)
-				local duration = math.max(distance / speed, 0.12)
+				local duration = distance / speed -- Natural duration without arbitrary 0.12s floor
 
 				local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 				local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
@@ -208,7 +251,8 @@ function Hub.StartCoinFarm(state)
 
 				local startTime = tick()
 				while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and Cache.Connections["CoinFarmActive"] and not Hub.IsPlayerInLobby(hrp) do
-					if (hrp.Position - targetCFrame.Position).Magnitude <= 0.8 then
+					-- Touch threshold set to 1.2 studs to trigger MM2 touch hitbox reliably without overshooting
+					if (hrp.Position - targetCFrame.Position).Magnitude <= 1.2 then
 						pcall(function() tween:Cancel() end)
 						break
 					end
@@ -220,7 +264,9 @@ function Hub.StartCoinFarm(state)
 					pcall(function() Cache.CurrentTween:Destroy() end)
 					Cache.CurrentTween = nil
 				end
-				task.wait(0.08)
+				
+				-- Replaced 0.08s standing delay with 1 heartbeat frame for instant transition
+				RunService.Heartbeat:Wait()
 			end
 		end
 
@@ -314,7 +360,7 @@ function Hub.StartBotSync(state)
 						Hub.SquadAllReadyTime = Hub.SquadAllReadyTime or tick()
 						local elapsed = tick() - Hub.SquadAllReadyTime
 
-						-- Murderer resets immediately if in lobby
+						-- Murderer resets immediately if all squad members are in lobby
 						if selfRole == "MURDERER" then
 							if (selfInLobby or selfFull) and not Hub.HasResetThisRound then
 								Hub.HasResetThisRound = true
