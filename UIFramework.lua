@@ -1466,16 +1466,20 @@ loadShareConfigBtn.Parent = loadConfigSection
 Instance.new("UICorner", loadShareConfigBtn).CornerRadius = UDim.new(0, 6)
 
 loadShareConfigBtn.MouseButton1Click:Connect(function()
-	local code = shareCodeInput.Text
+	local code = shareCodeInput.Text:gsub("%s+", "")
 	if code == "" then return end
 
 	local decodedSuccess, decoded = pcall(function()
-		return Hub.Base64Encode(code)
+		return Hub.Base64Decode(code)
 	end)
+
 	if decodedSuccess and decoded then
+		-- Sanitize unescaped newlines to spaces to prevent JSON control character errors
+		local cleanDecoded = decoded:gsub("[\r\n]+", " ")
 		local dataSuccess, parsed = pcall(function()
-			return HttpService:JSONDecode(decoded)
+			return HttpService:JSONDecode(cleanDecoded)
 		end)
+
 		if dataSuccess and parsed then
 			if Hub.LoadConfigFromTable then Hub.LoadConfigFromTable(parsed) end
 			loadShareConfigBtn.Text = "Share Config Loaded!"
