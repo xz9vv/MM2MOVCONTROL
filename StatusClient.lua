@@ -22,6 +22,11 @@ Hub.SessionCoins = Hub.SessionCoins or 0
 Hub.BotStatus = Hub.BotStatus or "FARMING"
 Hub.AutoConfigLoaded = false
 
+-- Dynamic App Settings (Updated Live via Python Response)
+Hub.TargetCoins = 1000
+Hub.QualityCheckSeconds = 120
+Hub.MaxPublicPlayers = 2
+
 local lastBagValue = 0
 local serverJoinTime = tick()
 local qualityCheckDone = false
@@ -94,7 +99,7 @@ task.spawn(function()
 	end
 end)
 
--- Send Periodic Heartbeats, Execute 2-Min Quality Check, & Auto-Shutdown on Kick
+-- Send Periodic Heartbeats, Execute Dynamic Quality Check, & Auto-Shutdown on Kick
 task.spawn(function()
 	task.wait(2)
 	print("[StatusClient] Heartbeat service active for: " .. tostring(LocalPlayer.Name))
@@ -126,9 +131,12 @@ task.spawn(function()
 			break
 		end
 
-		-- ONE-TIME 2-MINUTE SERVER QUALITY CHECK
+		-- DYNAMIC SERVER QUALITY CHECK (Uses Python Settings)
 		local elapsedServerTime = tick() - serverJoinTime
-		if elapsedServerTime >= 120 and not qualityCheckDone then
+		local qcDuration = Hub.QualityCheckSeconds or 120
+		local maxAllowedPublic = Hub.MaxPublicPlayers or 2
+
+		if elapsedServerTime >= qcDuration and not qualityCheckDone then
 			qualityCheckDone = true
 			
 			local nonBotCount = 0
@@ -144,8 +152,8 @@ task.spawn(function()
 				end
 			end
 			
-			if nonBotCount > 2 then
-				print("[StatusClient] 2-Min Quality Check FAILED! (" .. tostring(nonBotCount) .. " public players). Triggering Server Hop...")
+			if nonBotCount > maxAllowedPublic then
+				print("[StatusClient] Quality Check FAILED! (" .. tostring(nonBotCount) .. " public players > " .. tostring(maxAllowedPublic) .. "). Triggering Server Hop...")
 				Hub.BotStatus = "SERVER_INCOMPATIBLE"
 				
 				local payload = {
@@ -168,7 +176,7 @@ task.spawn(function()
 				pcall(function() game:Shutdown() end)
 				break
 			else
-				print("[StatusClient] 2-Min Quality Check PASSED! Server is clean (" .. tostring(nonBotCount) .. " public players). Farming until 1,000 coins!")
+				print("[StatusClient] Quality Check PASSED! Clean server (" .. tostring(nonBotCount) .. " public players). Farming until target (" .. tostring(Hub.TargetCoins or 1000) .. "c)!")
 			end
 		end
 
@@ -177,7 +185,8 @@ task.spawn(function()
 			break
 		end
 
-		if (Hub.SessionCoins or 0) >= 1000 then
+		-- Check dynamic target coins goal set in Python SETTINGS
+		if (Hub.SessionCoins or 0) >= (Hub.TargetCoins or 1000) then
 			Hub.BotStatus = "COMPLETED"
 		end
 
@@ -217,15 +226,26 @@ task.spawn(function()
 			if result and (result.StatusCode == 200 or result.StatusMessage == "OK") then
 				print("[StatusClient SUCCESS] Sent Heartbeat -> User: " .. LocalPlayer.Name .. " | Coins: " .. tostring(Hub.SessionCoins or 0) .. "c | Status: " .. tostring(Hub.BotStatus))
 				
-				if result.Body and not Hub.AutoConfigLoaded then
+				if result.Body then
 					local parseOk, resData = pcall(function()
-						return Services.HttpService:JSONEncode(result.Body)
+						return Services.HttpService:JSONDecode(result.Body)
 					end)
-					if parseOk and resData and resData.active_config then
-						print("[StatusClient] Successfully pulled Active Config from Python server!")
-						Hub.AutoConfigLoaded = true
-						if Hub.LoadConfigFromTable then
-							pcall(function() Hub.LoadConfigFromTable(resData.active_config) end)
+					
+					if parseOk and resData then
+						-- Pull dynamic settings from Python
+						if resData.app_settings then
+							Hub.TargetCoins = resData.app_settings.target_coins or 1000
+							Hub.QualityCheckSeconds = resData.app_settings.quality_check_seconds or 120
+							Hub.MaxPublicPlayers = resData.app_settings.max_public_players or 2
+						end
+
+						-- Auto-load active server config from Python on first response
+						if resData.active_config and not Hub.AutoConfigLoaded then
+							print("[StatusClient] Successfully pulled Active Config from Python server!")
+							Hub.AutoConfigLoaded = true
+							if Hub.LoadConfigFromTable then
+								pcall(function() Hub.LoadConfigFromTable(resData.active_config) end)
+							end
 						end
 					end
 				end
