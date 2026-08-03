@@ -20,6 +20,7 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 
 Hub.SessionCoins = Hub.SessionCoins or 0
 Hub.BotStatus = Hub.BotStatus or "FARMING"
+Hub.AutoConfigLoaded = false
 
 local lastBagValue = 0
 
@@ -29,7 +30,6 @@ local function isPlayerKicked()
 		return true
 	end
 
-	-- Check GuiService Error Code
 	local success, errorCode = pcall(function()
 		return Services.GuiService:GetErrorCode()
 	end)
@@ -37,7 +37,6 @@ local function isPlayerKicked()
 		return true
 	end
 
-	-- Check Roblox Disconnect UI Prompt
 	local promptOverlay = Services.CoreGui:FindFirstChild("RobloxPromptGui") and Services.CoreGui.RobloxPromptGui:FindFirstChild("promptOverlay")
 	if promptOverlay and promptOverlay:FindFirstChild("ErrorPrompt") then
 		return true
@@ -93,7 +92,7 @@ task.spawn(function()
 	end
 end)
 
--- Send Periodic Heartbeats to Python Server & Auto-Shutdown on Kick
+-- Send Periodic Heartbeats to Python Server & Auto-Load Server Config
 task.spawn(function()
 	task.wait(2)
 	print("[StatusClient] Heartbeat service active for: " .. tostring(LocalPlayer.Name))
@@ -169,6 +168,20 @@ task.spawn(function()
 
 			if result and (result.StatusCode == 200 or result.StatusMessage == "OK") then
 				print("[StatusClient SUCCESS] Sent Heartbeat -> User: " .. LocalPlayer.Name .. " | Coins: " .. tostring(Hub.SessionCoins or 0) .. "c | Status: " .. tostring(Hub.BotStatus))
+				
+				-- Auto-load active server config from Python on first response
+				if result.Body and not Hub.AutoConfigLoaded then
+					local parseOk, resData = pcall(function()
+						return Services.HttpService:JSONDecode(result.Body)
+					end)
+					if parseOk and resData and resData.active_config then
+						print("[StatusClient] Successfully pulled Active Config from Python server!")
+						Hub.AutoConfigLoaded = true
+						if Hub.LoadConfigFromTable then
+							pcall(function() Hub.LoadConfigFromTable(resData.active_config) end)
+						end
+					end
+				end
 			end
 		end
 	end
