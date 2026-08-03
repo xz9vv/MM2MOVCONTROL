@@ -7,7 +7,9 @@ getgenv().Hub = Hub
 
 local Services = {
 	Players = game:GetService("Players"),
-	HttpService = game:GetService("HttpService")
+	HttpService = game:GetService("HttpService"),
+	GuiService = game:GetService("GuiService"),
+	CoreGui = game:GetService("CoreGui")
 }
 
 local LocalPlayer = Services.Players.LocalPlayer
@@ -20,6 +22,29 @@ Hub.SessionCoins = Hub.SessionCoins or 0
 Hub.BotStatus = Hub.BotStatus or "FARMING"
 
 local lastBagValue = 0
+
+-- Check if player was kicked (Error 267, 277, Disconnect Prompt)
+local function isPlayerKicked()
+	if not LocalPlayer or not LocalPlayer.Parent then
+		return true
+	end
+
+	-- Check GuiService Error Code
+	local success, errorCode = pcall(function()
+		return Services.GuiService:GetErrorCode()
+	end)
+	if success and errorCode and errorCode.Value ~= 0 then
+		return true
+	end
+
+	-- Check Roblox Disconnect UI Prompt
+	local promptOverlay = Services.CoreGui:FindFirstChild("RobloxPromptGui") and Services.CoreGui.RobloxPromptGui:FindFirstChild("promptOverlay")
+	if promptOverlay and promptOverlay:FindFirstChild("ErrorPrompt") then
+		return true
+	end
+
+	return false
+end
 
 -- Exact DarkDex MM2 Bag TextLabel Reader
 local function getExactBagCoinCount()
@@ -55,7 +80,7 @@ local function getExactBagCoinCount()
 	return 0
 end
 
--- Monitor real-time coin bag increases during active rounds
+-- Monitor real-time coin bag increases
 task.spawn(function()
 	while task.wait(0.2) do
 		local currentBag = getExactBagCoinCount()
@@ -68,12 +93,38 @@ task.spawn(function()
 	end
 end)
 
--- Send Periodic Heartbeats to Python Server
+-- Send Periodic Heartbeats to Python Server & Auto-Shutdown on Kick
 task.spawn(function()
 	task.wait(2)
 	print("[StatusClient] Heartbeat service active for: " .. tostring(LocalPlayer.Name))
 
 	while task.wait(4) do
+		-- KICK/DISCONNECT DETECTION
+		if isPlayerKicked() then
+			warn("[StatusClient] KICK/DISCONNECT DETECTED! Shutting down window...")
+			Hub.BotStatus = "DISCONNECTED"
+			
+			local payload = {
+				AccountUsername = LocalPlayer.Name,
+				CurrentCoins = Hub.SessionCoins or 0,
+				Status = "DISCONNECTED"
+			}
+			
+			pcall(function()
+				local jsonString = Services.HttpService:JSONEncode(payload)
+				httpRequest({
+					Url = API_URL_1,
+					Method = "POST",
+					Headers = { ["Content-Type"] = "application/json" },
+					Body = jsonString
+				})
+			end)
+			
+			task.wait(0.5)
+			pcall(function() game:Shutdown() end)
+			break
+		end
+
 		if not httpRequest then
 			warn("[StatusClient ERROR] No HTTP request function supported by executor!")
 			break
