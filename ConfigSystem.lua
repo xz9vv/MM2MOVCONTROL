@@ -26,7 +26,6 @@ local function ParseUsernamesText(text)
 	local usernames = {}
 	if type(text) ~= "string" then return usernames end
 	
-	-- Split by comma, newline, or whitespace
 	for name in text:gmatch("[^,\r\n%s]+") do
 		local cleanName = name:match("^%s*(.-)%s*$")
 		if cleanName and #cleanName > 0 then
@@ -40,11 +39,9 @@ end
 -- CONFIG MANAGEMENT HELPERS
 -----------------------------------
 function Hub.GetSerializedConfig()
-	-- Read raw text from the Bot Usernames Textbox if available
 	local rawText = Hub.BotUsernamesInputText or Hub.MasterBotUsernamesText or ""
 	local masterList = ParseUsernamesText(rawText)
 	
-	-- Fallback: If textbox was empty, gather names from currently selected bots + LocalPlayer
 	if #masterList == 0 then
 		for userId, isSelected in pairs(VisualSelectedBots) do
 			if isSelected then
@@ -54,7 +51,6 @@ function Hub.GetSerializedConfig()
 				end
 			end
 		end
-		-- Also ensure creator's name is in the saved list
 		if LocalPlayer and LocalPlayer.Name and not table.find(masterList, LocalPlayer.Name) then
 			table.insert(masterList, LocalPlayer.Name)
 		end
@@ -151,14 +147,12 @@ function Hub.LoadConfigFromTable(data)
 	if usernamesToMatch then
 		table.clear(VisualSelectedBots)
 		
-		-- Restore raw textbox string
 		if data.MasterUsernamesRaw and #data.MasterUsernamesRaw > 0 then
 			Hub.BotUsernamesInputText = data.MasterUsernamesRaw
 		else
 			Hub.BotUsernamesInputText = table.concat(usernamesToMatch, ", ")
 		end
 		
-		-- Match any player in current server against the master list (excluding itself)
 		for _, name in ipairs(usernamesToMatch) do
 			local cleanTarget = name:lower():gsub("%s+", "")
 			for _, player in ipairs(Players:GetPlayers()) do
@@ -180,14 +174,16 @@ function Hub.GetConfigsManifest()
 	local manifest = {}
 	pcall(function()
 		if readfile and isfile and isfile("Dashboard_ConfigsManifest.json") then
-			manifest = HttpService:JSONEncode(readfile("Dashboard_ConfigsManifest.json"))
+			-- FIXED: Used JSONDecode instead of JSONEncode so it returns a Lua Table
+			manifest = HttpService:JSONDecode(readfile("Dashboard_ConfigsManifest.json"))
 		end
 	end)
-	return manifest
+	return (type(manifest) == "table") and manifest or {}
 end
 
 function Hub.SaveConfigToManifest(name)
 	local manifest = Hub.GetConfigsManifest()
+	if type(manifest) ~= "table" then manifest = {} end
 	if not table.find(manifest, name) then
 		table.insert(manifest, name)
 		pcall(function()
