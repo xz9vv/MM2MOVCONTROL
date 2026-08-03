@@ -21,18 +21,48 @@ local CollectedCoins = Hub.CollectedCoins
 local VisualSelectedBots = Hub.VisualSelectedBots
 
 -----------------------------------
+-- LOCAL BLACK FARM PLATFORM SYSTEM
+-----------------------------------
+local farmPlatform = nil
+
+local function createFarmPlatform()
+	if farmPlatform and farmPlatform.Parent then 
+		return farmPlatform 
+	end
+
+	local part = Instance.new("Part")
+	part.Name = "LocalFarmPlatform"
+	part.Size = Vector3.new(8, 1, 8) -- 8x1x8 studs wide platform
+	part.Color = Color3.fromRGB(0, 0, 0) -- Solid black
+	part.Material = Enum.Material.SmoothPlastic
+	part.Transparency = 0 -- Fully visible
+	part.CanCollide = true
+	part.Anchored = true
+	part.CastShadow = false
+	part.Parent = Workspace
+
+	farmPlatform = part
+	return part
+end
+
+local function destroyFarmPlatform()
+	if farmPlatform then
+		pcall(function() farmPlatform:Destroy() end)
+		farmPlatform = nil
+	end
+end
+
+-----------------------------------
 -- FOOLPROOF MURDERER DETECTOR
 -----------------------------------
 local function IsMurdererWeapon(tool)
 	if not tool or not tool:IsA("Tool") then return false end
 	local nameLower = tool.Name:lower()
 	
-	-- Check standard name matches
 	if nameLower:find("knife") or nameLower:find("blade") or nameLower:find("dagger") or nameLower == "bat" then
 		return true
 	end
 
-	-- Check internal MM2 Murderer tool components (works on custom skins like Harvester/Bat)
 	if tool:FindFirstChild("KnifeServer") or tool:FindFirstChild("KnifeClient") or tool:FindFirstChild("LockOn") then
 		return true
 	end
@@ -43,12 +73,10 @@ end
 local function GetPublicMurdererFoolproof()
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player.Character then
-			-- Check currently equipped tool
 			local equipped = player.Character:FindFirstChildOfClass("Tool")
 			if equipped and IsMurdererWeapon(equipped) then
 				return player
 			end
-			-- Check backpack items
 			local backpack = player:FindFirstChild("Backpack")
 			if backpack then
 				for _, item in ipairs(backpack:GetChildren()) do
@@ -62,7 +90,6 @@ local function GetPublicMurdererFoolproof()
 	return nil
 end
 
--- Override Hub's murderer detection with foolproof scanner
 Hub.GetPublicMurderer = GetPublicMurdererFoolproof
 
 -----------------------------------
@@ -87,7 +114,6 @@ local function shootMurdererLooped(murdPlayer)
 				break 
 			end
 
-			-- Stop shooting if Murderer is already knocked into the void
 			if murdHRP.Position.Y < -20 then
 				break
 			end
@@ -168,28 +194,23 @@ local function flingMurdererLooped(murdPlayer)
 				break
 			end
 
-			-- Safety Check: Stop flinging if Murderer is already knocked below the map / into the void
 			if murdHRP.Position.Y < -20 then
 				break
 			end
 
 			Hub.SetNoclip(true)
 
-			-- Downward Slam Physics Setup
 			hum.PlatformStand = true
 			hrp.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
 			
-			-- High Angular Velocity combined with Downward Linear Impulse
 			hrp.AssemblyAngularVelocity = Vector3.new(0, 999999, 0)
 			hrp.AssemblyLinearVelocity = Vector3.new(0, -2500, 0)
 
-			-- Position 2.5 studs ABOVE the Murderer to slam them straight down into the floor/void
 			hrp.CFrame = murdHRP.CFrame * CFrame.new(math.random(-0.5, 0.5), 2.5, math.random(-0.5, 0.5))
 
 			RunService.Heartbeat:Wait()
 		end
 
-		-- Restore normal character state on exit
 		local char = LocalPlayer.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
 		local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -232,6 +253,7 @@ function Hub.StartCoinFarm(state)
 			pcall(function() Cache.CurrentTween:Cancel() Cache.CurrentTween:Destroy() end)
 			Cache.CurrentTween = nil
 		end
+		destroyFarmPlatform()
 		Hub.SetNoclip(false)
 		return
 	end
@@ -249,6 +271,7 @@ function Hub.StartCoinFarm(state)
 					pcall(function() Cache.CurrentTween:Cancel() Cache.CurrentTween:Destroy() end)
 					Cache.CurrentTween = nil
 				end
+				destroyFarmPlatform()
 				Hub.SetNoclip(false)
 				task.wait(0.5)
 				continue
@@ -259,6 +282,7 @@ function Hub.StartCoinFarm(state)
 					pcall(function() Cache.CurrentTween:Cancel() Cache.CurrentTween:Destroy() end)
 					Cache.CurrentTween = nil
 				end
+				destroyFarmPlatform()
 				Hub.SetNoclip(false)
 				task.wait(0.5)
 				continue
@@ -274,6 +298,7 @@ function Hub.StartCoinFarm(state)
 					pcall(function() Cache.CurrentTween:Cancel() Cache.CurrentTween:Destroy() end)
 					Cache.CurrentTween = nil
 				end
+				destroyFarmPlatform()
 				Hub.SetNoclip(false)
 
 				hrp.CFrame = Hub.GetLobbyCFrame()
@@ -289,7 +314,11 @@ function Hub.StartCoinFarm(state)
 
 			Hub.SetNoclip(true)
 
-			-- Keep camera subject attached to character
+			-- Position the local black platform directly under feet
+			local plat = createFarmPlatform()
+			plat.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
+
+			-- Keep camera subject attached to humanoid
 			local cam = Workspace.CurrentCamera
 			if cam and cam.CameraSubject ~= hum then
 				cam.CameraSubject = hum
@@ -345,21 +374,10 @@ function Hub.StartCoinFarm(state)
 			if closestCoin and closestCoin.Parent then
 				CollectedCoins[closestCoin] = true
 
+				-- Original simple Y-Offset calculation
 				local targetCFrame = closestCoin.CFrame
-				
-				-- RAYCAST GROUND CHECK: Only apply Y-Offset if there is solid floor beneath the coin
 				if Cache.Use5YOffset then
-					local rayParams = RaycastParams.new()
-					rayParams.FilterType = Enum.RaycastFilterType.Exclude
-					rayParams.FilterDescendantsInstances = {char, Workspace:FindFirstChild("CoinContainer", true) or Workspace:FindFirstChild("Coin_Container", true)}
-
-					local rayResult = Workspace:Raycast(closestCoin.Position, Vector3.new(0, -6, 0), rayParams)
-					
-					-- Only offset if a solid floor was detected underneath
-					if rayResult and rayResult.Instance then
-						local safeYOffset = math.clamp(Cache.YOffset or 2.5, 1, 2.5)
-						targetCFrame = targetCFrame - Vector3.new(0, safeYOffset, 0)
-					end
+					targetCFrame = targetCFrame - Vector3.new(0, Cache.YOffset or 2, 0)
 				end
 
 				local distance = (hrp.Position - targetCFrame.Position).Magnitude
@@ -374,6 +392,11 @@ function Hub.StartCoinFarm(state)
 
 				local startTime = tick()
 				while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and Cache.Connections["CoinFarmActive"] and not Hub.IsPlayerInLobby(hrp) do
+					-- Move black platform continuously under feet during flight
+					if farmPlatform and farmPlatform.Parent then
+						farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
+					end
+
 					if (hrp.Position - targetCFrame.Position).Magnitude <= 1.2 then
 						pcall(function() tween:Cancel() end)
 						break
@@ -395,6 +418,7 @@ function Hub.StartCoinFarm(state)
 			pcall(function() Cache.CurrentTween:Cancel() Cache.CurrentTween:Destroy() end)
 			Cache.CurrentTween = nil
 		end
+		destroyFarmPlatform()
 		Hub.SetNoclip(false)
 	end)
 end
@@ -448,7 +472,6 @@ function Hub.StartBotSync(state)
 
 				local publicMurd = Hub.GetPublicMurderer()
 
-				-- Intermission check: Clear round flags when no active murderer exists
 				if not publicMurd then
 					Hub.HasResetThisRound = false
 					Hub.WasOnMapThisRound = false
@@ -506,7 +529,6 @@ function Hub.StartBotSync(state)
 						-- 2. Innocent Logic
 						elseif selfRole == "INNOCENT" then
 							if publicMurd and not Hub.DiedThisRound then
-								-- Execute EXACTLY ONE reset at the 8-second mark if stuck in lobby
 								if elapsed >= 8 and not Hub.HasResetThisRound then
 									local _, mapAlive = Hub.GetAlivePlayers()
 									if #mapAlive > 0 and (selfInLobby or selfFull) then
@@ -514,7 +536,6 @@ function Hub.StartBotSync(state)
 										hum.Health = 0
 										Hub.SquadAllReadyTime = nil
 									end
-								-- If bot already reset, respawned in lobby, but Murderer is STILL alive -> FLING DOWNWARD!
 								elseif Hub.HasResetThisRound and hum.Health > 0 then
 									flingMurdererLooped(publicMurd)
 								end
