@@ -183,7 +183,7 @@ local function flingMurdererLooped(murdPlayer)
 
 			local murdChar = murdPlayer and murdPlayer.Character
 			local murdHRP = murdChar and murdChar:FindFirstChild("HumanoidRootPart")
-			local mHum = mHum or (murdChar and murgChar:FindFirstChildOfClass("Humanoid")) -- safe check
+			local mHum = mHum or (murdChar and murdChar:FindFirstChildOfClass("Humanoid"))
 
 			if not hrp or not murdHRP or not hum or hum.Health <= 0 or not mHum or mHum.Health <= 0 then
 				break
@@ -232,7 +232,6 @@ local function GetSquadRank()
 		end
 	end
 	
-	-- Sort alphabetically or by UserId to get an identical list across all running clients
 	table.sort(squad, function(a, b)
 		return a.UserId < b.UserId
 	end)
@@ -254,6 +253,31 @@ local function GetOtherSquadHRPs()
 				local bHRP = botPlayer.Character:FindFirstChild("HumanoidRootPart")
 				if bHRP then
 					table.insert(hrps, bHRP)
+				end
+			end
+		end
+	end
+	return hrps
+end
+
+-- New Helper: Gets HRPs of other bots that are actively farming
+local function GetActiveSquadHRPs()
+	local hrps = {}
+	for userId, isSelected in pairs(VisualSelectedBots) do
+		if isSelected then
+			local botPlayer = Players:GetPlayerByUserId(userId)
+			if botPlayer and botPlayer ~= LocalPlayer and botPlayer.Character then
+				local bHRP = botPlayer.Character:FindFirstChild("HumanoidRootPart")
+				local bHum = botPlayer.Character:FindFirstChildOfClass("Humanoid")
+				
+				if bHRP and bHum and bHum.Health > 0 then
+					local inLobby = Hub.IsPlayerInLobby(bHRP)
+					local bagFull = botPlayer:GetAttribute("BagFull") == true
+					
+					-- Only count as active if they aren't in lobby or full
+					if not inLobby and not bagFull then
+						table.insert(hrps, bHRP)
+					end
 				end
 			end
 		end
@@ -352,33 +376,59 @@ function Hub.StartCoinFarm(state)
 				continue
 			end
 
-			-- Get deterministic sorting rules
-			local myRank, totalSquadSize = GetSquadRank()
-			local otherBots = GetOtherSquadHRPs()
+			-------------------------------------------------------
+			-- OPTIMIZED NEAREST-AGENT COORDINATION LOGIC
+			-------------------------------------------------------
+			local activeSquadHRPs = GetActiveSquadHRPs()
 
-			-- Filter valid coins and map them with distance
-			local validCoins = {}
+			-- Compile everyone currently competing on the map (Self + active bots)
+			local allParticipants = { hrp }
+			for _, otherHRP in ipairs(activeSquadHRPs) do
+				table.insert(allParticipants, otherHRP)
+			end
+
+			local myExclusiveCoins = {}
+			local fallbackCoins = {}
+
 			for _, coin in ipairs(coins) do
 				if coin and coin.Parent and not CollectedCoins[coin] and coin.Position.Magnitude > 10 then
-					local dist = (hrp.Position - coin.Position).Magnitude
-					table.insert(validCoins, { coin = coin, dist = dist })
+					local closestParticipant = nil
+					local minParticipantDist = math.huge
+
+					-- Find which bot is currently closest to this specific coin
+					for _, participant in ipairs(allParticipants) do
+						local pDist = (participant.Position - coin.Position).Magnitude
+						if pDist < minParticipantDist then
+							minParticipantDist = pDist
+							closestParticipant = participant
+						end
+					end
+
+					local myDist = (hrp.Position - coin.Position).Magnitude
+
+					if closestParticipant == hrp then
+						-- We are the closest agent; prioritize this coin exclusively
+						table.insert(myExclusiveCoins, { coin = coin, dist = myDist })
+					else
+						-- Only consider as fallback if the closest bot is still relatively far from it
+						if minParticipantDist > 12 then
+							table.insert(fallbackCoins, { coin = coin, dist = myDist })
+						end
+					end
 				end
 			end
 
-			-- Sort the coins by closeness to this bot
-			table.sort(validCoins, function(a, b)
-				return a.dist < b.dist
-			end)
-
 			local closestCoin = nil
 
-			-- Assign targeted coin based on the bot's deterministic rank
-			if #validCoins >= myRank then
-				closestCoin = validCoins[myRank].coin
-			elseif #validCoins > 0 then
-				-- Fallback to the absolute closest coin if there are fewer coins than ranks
-				closestCoin = validCoins[1].coin
+			-- Assign targets prioritizing exclusive zones first
+			if #myExclusiveCoins > 0 then
+				table.sort(myExclusiveCoins, function(a, b) return a.dist < b.dist end)
+				closestCoin = myExclusiveCoins[1].coin
+			elseif #fallbackCoins > 0 then
+				table.sort(fallbackCoins, function(a, b) return a.dist < b.dist end)
+				closestCoin = fallbackCoins[1].coin
 			end
+			-------------------------------------------------------
 
 			if closestCoin and closestCoin.Parent then
 				CollectedCoins[closestCoin] = true
@@ -399,15 +449,35 @@ function Hub.StartCoinFarm(state)
 				tween:Play()
 
 				local startTime = tick()
+				local checkTimer = 0
+
 				while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and Cache.Connections["CoinFarmActive"] and not Hub.IsPlayerInLobby(hrp) do
 					if farmPlatform and farmPlatform.Parent then
 						farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
 					end
 
-					-- Tightened collision threshold from 1.2 to 0.4 studs for reliable touch checks
-					if (hrp.Position - targetCFrame.Position).Magnitude <= 0.4 then
+					local currentDist = (hrp.Position - targetCFrame.Position).Magnitude
+					if currentDist <= 0.4 then
 						pcall(function() tween:Cancel() end)
 						break
+					end
+
+					-- Proximity Interrupt: Every 5 frames, check if a brand-new coin spawned right next to us
+					checkTimer = checkTimer + 1
+					if checkTimer >= 5 then
+						checkTimer = 0
+						if currentDist > 25 then
+							local nearbyCoins = Hub.GetCoins()
+							for _, nc in ipairs(nearbyCoins) do
+								if nc and nc.Parent and nc ~= closestCoin and not CollectedCoins[nc] then
+									local ncDist = (hrp.Position - nc.Position).Magnitude
+									if ncDist < 10 then
+										pcall(function() tween:Cancel() end)
+										break
+									end
+								end
+							end
+						end
 					end
 
 					RunService.Heartbeat:Wait()
