@@ -21,6 +21,13 @@ local CollectedCoins = Hub.CollectedCoins
 local VisualSelectedBots = Hub.VisualSelectedBots
 
 -----------------------------------
+-- COOPERATIVE FARM STATE MEMORY
+-----------------------------------
+local BlacklistedCoins = {}  -- Format: [coinInstance] = expirationTick
+local forceScatterPivot = false
+local scatterPivotSource = nil
+
+-----------------------------------
 -- LOCAL BLACK FARM PLATFORM SYSTEM
 -----------------------------------
 local farmPlatform = nil
@@ -219,7 +226,7 @@ local function flingMurdererLooped(murdPlayer)
 end
 
 -----------------------------------
--- HELPER: DETERMINISTIC SQUAD RANK
+-- HELPER: SQUAD RANK DETERMINATION
 -----------------------------------
 local function GetSquadRank()
 	local squad = { LocalPlayer }
@@ -244,6 +251,30 @@ local function GetSquadRank()
 	return 1, 1
 end
 
+-- Helper: Fetch the rank of a specific player safely
+local function GetPlayerSquadRank(targetPlayer)
+	local squad = { LocalPlayer }
+	for userId, isSelected in pairs(VisualSelectedBots) do
+		if isSelected then
+			local botPlayer = Players:GetPlayerByUserId(userId)
+			if botPlayer then
+				table.insert(squad, botPlayer)
+			end
+		end
+	end
+	
+	table.sort(squad, function(a, b)
+		return a.UserId < b.UserId
+	end)
+	
+	for idx, player in ipairs(squad) do
+		if player == targetPlayer then
+			return idx
+		end
+	end
+	return 999
+end
+
 local function GetOtherSquadHRPs()
 	local hrps = {}
 	for userId, isSelected in pairs(VisualSelectedBots) do
@@ -260,7 +291,7 @@ local function GetOtherSquadHRPs()
 	return hrps
 end
 
--- New Helper: Gets HRPs of other bots that are actively farming
+-- Helper: Get active farming bots (excluding dead/lobby/full accounts)
 local function GetActiveSquadHRPs()
 	local hrps = {}
 	for userId, isSelected in pairs(VisualSelectedBots) do
@@ -274,7 +305,6 @@ local function GetActiveSquadHRPs()
 					local inLobby = Hub.IsPlayerInLobby(bHRP)
 					local bagFull = botPlayer:GetAttribute("BagFull") == true
 					
-					-- Only count as active if they aren't in lobby or full
 					if not inLobby and not bagFull then
 						table.insert(hrps, bHRP)
 					end
@@ -377,11 +407,9 @@ function Hub.StartCoinFarm(state)
 			end
 
 			-------------------------------------------------------
-			-- OPTIMIZED NEAREST-AGENT COORDINATION LOGIC
+			-- NEAREST-AGENT COORDINATION & SCATTER PIECE
 			-------------------------------------------------------
 			local activeSquadHRPs = GetActiveSquadHRPs()
-
-			-- Compile everyone currently competing on the map (Self + active bots)
 			local allParticipants = { hrp }
 			for _, otherHRP in ipairs(activeSquadHRPs) do
 				table.insert(allParticipants, otherHRP)
@@ -390,37 +418,63 @@ function Hub.StartCoinFarm(state)
 			local myExclusiveCoins = {}
 			local fallbackCoins = {}
 
-			for _, coin in ipairs(coins) do
-				if coin and coin.Parent and not CollectedCoins[coin] and coin.Position.Magnitude > 10 then
-					local closestParticipant = nil
-					local minParticipantDist = math.huge
+			-- Helper to populate target tables based on distances and scatter rules
+			local function evaluateCoins(applyScatter)
+				table.clear(myExclusiveCoins)
+				table.clear(fallbackCoins)
 
-					-- Find which bot is currently closest to this specific coin
-					for _, participant in ipairs(allParticipants) do
-						local pDist = (participant.Position - coin.Position).Magnitude
-						if pDist < minParticipantDist then
-							minParticipantDist = pDist
-							closestParticipant = participant
-						end
-					end
+				for _, coin in ipairs(coins) do
+					if coin and coin.Parent and coin.Position.Magnitude > 10 then
+						-- Filter via the rolling 3-second cooldown blacklist
+						local exp = BlacklistedCoins[coin]
+						if not exp or tick() >= exp then
+							
+							-- Filter via the 30-stud Scatter Pivot if active
+							local passesDistanceConstraint = true
+							if applyScatter and forceScatterPivot and scatterPivotSource then
+								if (coin.Position - scatterPivotSource).Magnitude < 30 then
+									passesDistanceConstraint = false
+								end
+							end
 
-					local myDist = (hrp.Position - coin.Position).Magnitude
+							if passesDistanceConstraint then
+								local closestParticipant = nil
+								local minParticipantDist = math.huge
 
-					if closestParticipant == hrp then
-						-- We are the closest agent; prioritize this coin exclusively
-						table.insert(myExclusiveCoins, { coin = coin, dist = myDist })
-					else
-						-- Only consider as fallback if the closest bot is still relatively far from it
-						if minParticipantDist > 12 then
-							table.insert(fallbackCoins, { coin = coin, dist = myDist })
+								for _, participant in ipairs(allParticipants) do
+									local pDist = (participant.Position - coin.Position).Magnitude
+									if pDist < minParticipantDist then
+										minParticipantDist = pDist
+										closestParticipant = participant
+									end
+								end
+
+								local myDist = (hrp.Position - coin.Position).Magnitude
+
+								if closestParticipant == hrp then
+									table.insert(myExclusiveCoins, { coin = coin, dist = myDist })
+								else
+									-- Filter out falling fallback targets to prevent overlaps
+									if minParticipantDist > 12 then
+										table.insert(fallbackCoins, { coin = coin, dist = myDist })
+									end
+								end
+							end
 						end
 					end
 				end
 			end
 
+			-- Try applying the Scatter Pivot constraint first
+			evaluateCoins(true)
+
+			-- Failsafe: If scatter constraint made all targets empty, recalculate without constraint
+			if #myExclusiveCoins == 0 and #fallbackCoins == 0 and forceScatterPivot then
+				evaluateCoins(false)
+			end
+
 			local closestCoin = nil
 
-			-- Assign targets prioritizing exclusive zones first
 			if #myExclusiveCoins > 0 then
 				table.sort(myExclusiveCoins, function(a, b) return a.dist < b.dist end)
 				closestCoin = myExclusiveCoins[1].coin
@@ -428,11 +482,15 @@ function Hub.StartCoinFarm(state)
 				table.sort(fallbackCoins, function(a, b) return a.dist < b.dist end)
 				closestCoin = fallbackCoins[1].coin
 			end
+
+			-- If we successfully targeted a coin, we can safely reset the scatter pivot
+			if closestCoin then
+				forceScatterPivot = false
+				scatterPivotSource = nil
+			end
 			-------------------------------------------------------
 
 			if closestCoin and closestCoin.Parent then
-				CollectedCoins[closestCoin] = true
-
 				local targetCFrame = closestCoin.CFrame
 				if Cache.Use5YOffset then
 					targetCFrame = targetCFrame - Vector3.new(0, Cache.YOffset or 2, 0)
@@ -449,7 +507,7 @@ function Hub.StartCoinFarm(state)
 				tween:Play()
 
 				local startTime = tick()
-				local checkTimer = 0
+				local tailgateStart = nil
 
 				while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and Cache.Connections["CoinFarmActive"] and not Hub.IsPlayerInLobby(hrp) do
 					if farmPlatform and farmPlatform.Parent then
@@ -457,27 +515,52 @@ function Hub.StartCoinFarm(state)
 					end
 
 					local currentDist = (hrp.Position - targetCFrame.Position).Magnitude
+					
+					-- Touch Detection
 					if currentDist <= 0.4 then
+						-- Cooldown Blacklist (3 seconds) to prevent double-touches
+						BlacklistedCoins[closestCoin] = tick() + 3
 						pcall(function() tween:Cancel() end)
 						break
 					end
 
-					-- Proximity Interrupt: Every 5 frames, check if a brand-new coin spawned right next to us
-					checkTimer = checkTimer + 1
-					if checkTimer >= 5 then
-						checkTimer = 0
-						if currentDist > 25 then
-							local nearbyCoins = Hub.GetCoins()
-							for _, nc in ipairs(nearbyCoins) do
-								if nc and nc.Parent and nc ~= closestCoin and not CollectedCoins[nc] then
-									local ncDist = (hrp.Position - nc.Position).Magnitude
-									if ncDist < 10 then
-										pcall(function() tween:Cancel() end)
-										break
-									end
+					-- 3-Second Tailgate Watchdog Check
+					local activeOtherHRPs = GetActiveSquadHRPs()
+					local isTailgating = false
+					local higherRankNear = false
+
+					for _, otherHRP in ipairs(activeOtherHRPs) do
+						local distToOther = (hrp.Position - otherHRP.Position).Magnitude
+						if distToOther <= 8 then
+							isTailgating = true
+							
+							local otherPlayer = Players:GetPlayerFromCharacter(otherHRP.Parent)
+							if otherPlayer then
+								local otherRank = GetPlayerSquadRank(otherPlayer)
+								local myRank = GetPlayerSquadRank(LocalPlayer)
+								if otherRank < myRank then
+									higherRankNear = true
 								end
 							end
 						end
+					end
+
+					if isTailgating and higherRankNear then
+						tailgateStart = tailgateStart or tick()
+						local elapsedTailgate = tick() - tailgateStart
+						if elapsedTailgate >= 3 then
+							-- Trigger Abort & Scatter Pivot
+							forceScatterPivot = true
+							scatterPivotSource = hrp.Position
+							
+							-- Temporarily blacklist this specific coin to prevent re-targeting
+							BlacklistedCoins[closestCoin] = tick() + 5
+							
+							pcall(function() tween:Cancel() end)
+							break
+						end
+					else
+						tailgateStart = nil
 					end
 
 					RunService.Heartbeat:Wait()
@@ -639,4 +722,4 @@ function Hub.StartBotSync(state)
 	end
 end
 
-print("[MM2 Hub] FarmingAndBots.lua loaded successfully!")
+print("[MM2 Hub] FarmingAndBots.lua loaded successfully with Spatial Coordination!")
