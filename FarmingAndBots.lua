@@ -183,9 +183,9 @@ local function flingMurdererLooped(murdPlayer)
 
 			local murdChar = murdPlayer and murdPlayer.Character
 			local murdHRP = murdChar and murdChar:FindFirstChild("HumanoidRootPart")
-			local murdHum = murdChar and murdChar:FindFirstChildOfClass("Humanoid")
+			local mHum = mHum or (murdChar and murgChar:FindFirstChildOfClass("Humanoid")) -- safe check
 
-			if not hrp or not murdHRP or not hum or hum.Health <= 0 or not murdHum or murdHum.Health <= 0 then
+			if not hrp or not murdHRP or not hum or hum.Health <= 0 or not mHum or mHum.Health <= 0 then
 				break
 			end
 
@@ -219,8 +219,32 @@ local function flingMurdererLooped(murdPlayer)
 end
 
 -----------------------------------
--- HELPER: GET SQUAD BOTS
+-- HELPER: DETERMINISTIC SQUAD RANK
 -----------------------------------
+local function GetSquadRank()
+	local squad = { LocalPlayer }
+	for userId, isSelected in pairs(VisualSelectedBots) do
+		if isSelected then
+			local botPlayer = Players:GetPlayerByUserId(userId)
+			if botPlayer then
+				table.insert(squad, botPlayer)
+			end
+		end
+	end
+	
+	-- Sort alphabetically or by UserId to get an identical list across all running clients
+	table.sort(squad, function(a, b)
+		return a.UserId < b.UserId
+	end)
+	
+	for idx, player in ipairs(squad) do
+		if player == LocalPlayer then
+			return idx, #squad
+		end
+	end
+	return 1, 1
+end
+
 local function GetOtherSquadHRPs()
 	local hrps = {}
 	for userId, isSelected in pairs(VisualSelectedBots) do
@@ -328,40 +352,32 @@ function Hub.StartCoinFarm(state)
 				continue
 			end
 
+			-- Get deterministic sorting rules
+			local myRank, totalSquadSize = GetSquadRank()
 			local otherBots = GetOtherSquadHRPs()
-			local closestCoin = nil
-			local shortestDist = math.huge
 
+			-- Filter valid coins and map them with distance
+			local validCoins = {}
 			for _, coin in ipairs(coins) do
 				if coin and coin.Parent and not CollectedCoins[coin] and coin.Position.Magnitude > 10 then
 					local dist = (hrp.Position - coin.Position).Magnitude
-
-					local anotherBotCloser = false
-					for _, bHRP in ipairs(otherBots) do
-						local botDist = (bHRP.Position - coin.Position).Magnitude
-						if botDist + 6 < dist then
-							anotherBotCloser = true
-							break
-						end
-					end
-
-					if not anotherBotCloser and dist < shortestDist then
-						shortestDist = dist
-						closestCoin = coin
-					end
+					table.insert(validCoins, { coin = coin, dist = dist })
 				end
 			end
 
-			if not closestCoin then
-				for _, coin in ipairs(coins) do
-					if coin and coin.Parent and not CollectedCoins[coin] and coin.Position.Magnitude > 10 then
-						local dist = (hrp.Position - coin.Position).Magnitude
-						if dist < shortestDist then
-							shortestDist = dist
-							closestCoin = coin
-						end
-					end
-				end
+			-- Sort the coins by closeness to this bot
+			table.sort(validCoins, function(a, b)
+				return a.dist < b.dist
+			end)
+
+			local closestCoin = nil
+
+			-- Assign targeted coin based on the bot's deterministic rank
+			if #validCoins >= myRank then
+				closestCoin = validCoins[myRank].coin
+			elseif #validCoins > 0 then
+				-- Fallback to the absolute closest coin if there are fewer coins than ranks
+				closestCoin = validCoins[1].coin
 			end
 
 			if closestCoin and closestCoin.Parent then
@@ -388,7 +404,8 @@ function Hub.StartCoinFarm(state)
 						farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
 					end
 
-					if (hrp.Position - targetCFrame.Position).Magnitude <= 1.2 then
+					-- Tightened collision threshold from 1.2 to 0.4 studs for reliable touch checks
+					if (hrp.Position - targetCFrame.Position).Magnitude <= 0.4 then
 						pcall(function() tween:Cancel() end)
 						break
 					end
