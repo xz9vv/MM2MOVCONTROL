@@ -414,10 +414,8 @@ local function startPerformanceTracker()
 		local startTime = nil
 		local statsFrozen = false
 		
-		-- Real-time state machine to handle queuing and avoid premature resets
 		local squadStates = {} -- Format: [userId_or_LocalPlayer] = "idle" / "farming" / "finished"
 		
-		-- Track total round coins dynamically (Initial coins + any additions)
 		local initialCoinsInRound = 0
 		local subsequentSpawns = 0
 		local spawnConn = nil
@@ -438,7 +436,6 @@ local function startPerformanceTracker()
 					subsequentSpawns = 0
 					table.clear(squadStates)
 
-					-- Dynamically monitor every coin spawned during the round
 					if spawnConn then pcall(function() spawnConn:Disconnect() end) end
 					spawnConn = container.ChildAdded:Connect(function()
 						subsequentSpawns = subsequentSpawns + 1
@@ -520,11 +517,11 @@ local function startPerformanceTracker()
 				local elapsed = tick() - startTime
 				local mins = math.floor(elapsed / 60)
 				local secs = math.floor(elapsed % 60)
-				local totalCoinsTracked = initialCoinsInRound + subsequentSpawns
 				
-				timerText.Text = string.format("Time: %02d:%02d | Coins in Round: %d", mins, secs, totalCoinsTracked)
+				-- LIVE MAP COUNT VISUALIZATION (Decreases when collected, increases when spawned)
+				local liveCoins = #container:GetChildren()
+				timerText.Text = string.format("Time: %02d:%02d | Live on Map: %d", mins, secs, liveCoins)
 
-				-- Calculate how many bots have actually participated (entered "farming" or "finished")
 				local activeParticipating = 0
 				for id, state in pairs(squadStates) do
 					if state == "farming" or state == "finished" then
@@ -538,7 +535,7 @@ local function startPerformanceTracker()
 				local liveCPS = estimatedCoinsGained / elapsed
 				cpsText.Text = string.format("Live CPS: %.2f CPS", liveCPS)
 
-				-- 4. Dynamic completion trigger (Only freeze when all actively participating bots finish)
+				-- 4. Dynamic completion trigger
 				if activeParticipating > 0 and finishedCount == activeParticipating then
 					statsFrozen = true
 					local finalTime = elapsed
@@ -546,8 +543,10 @@ local function startPerformanceTracker()
 					local finalSecs = math.floor(finalTime % 60)
 					local totalCoinsExpected = activeParticipating * 40
 					local avgCPS = totalCoinsExpected / finalTime
+					local totalCoinsTracked = initialCoinsInRound + subsequentSpawns
 
-					timerText.Text = string.format("FINISHED! Round Took: %02d:%02d | Coins: %d", finalMins, finalSecs, totalCoinsTracked)
+					-- Freezes and displays cumulative round stats on completion
+					timerText.Text = string.format("FINISHED! Round: %02d:%02d | Total Spawns: %d", finalMins, finalSecs, totalCoinsTracked)
 					cpsText.Text = string.format("Average CPS: %.2f CPS", avgCPS)
 					lobbyText.Text = string.format("All %d Active Bots Finished!", activeParticipating)
 				end
@@ -968,4 +967,4 @@ function Hub.StartBotSync(state)
 	end
 end
 
-print("[MM2 Hub] FarmingAndBots.lua loaded successfully with Spatial Coordination & Fixed Stats HUD!")
+print("[MM2 Hub] FarmingAndBots.lua loaded successfully with Spatial Coordination & Live Map HUD!")
