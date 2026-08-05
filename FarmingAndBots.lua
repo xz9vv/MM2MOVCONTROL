@@ -23,7 +23,8 @@ local VisualSelectedBots = Hub.VisualSelectedBots
 -----------------------------------
 -- COOPERATIVE FARM STATE MEMORY
 -----------------------------------
-local BlacklistedCoins = {}  -- Format: [coinInstance] = expirationTick
+-- Optimized: Weak keys to prevent memory leaks from holding onto destroyed coin instances
+local BlacklistedCoins = setmetatable({}, { __mode = "k" })  
 local forceScatterPivot = false
 local scatterPivotSource = nil
 
@@ -35,9 +36,17 @@ local cpsText = nil
 local lobbyText = nil
 local trackingActive = false
 
--- Helper to recursively find the MM2 coin container
+-- Optimized: Cache the container instance to avoid expensive recursive searches on the workspace
+local cachedCoinContainer = nil
 local function findCoinContainer()
-	return Workspace:FindFirstChild("CoinContainer", true) or Workspace:FindFirstChild("Coin_Container", true)
+	if cachedCoinContainer and cachedCoinContainer.Parent then
+		return cachedCoinContainer
+	end
+	local container = Workspace:FindFirstChild("CoinContainer", true) or Workspace:FindFirstChild("Coin_Container", true)
+	if container then
+		cachedCoinContainer = container
+	end
+	return container
 end
 
 -----------------------------------
@@ -79,7 +88,8 @@ local function IsMurdererWeapon(tool)
 	if not tool or not tool:IsA("Tool") then return false end
 	local nameLower = tool.Name:lower()
 	
-	if nameLower:find("knife") or nameLower:find("blade") or nameLower:find("dagger") or nameLower == "bat" then
+	-- Optimized: Use plain-text matching (third argument true) to skip regex engine overhead
+	if nameLower:find("knife", 1, true) or nameLower:find("blade", 1, true) or nameLower:find("dagger", 1, true) or nameLower == "bat" then
 		return true
 	end
 
@@ -196,6 +206,7 @@ local function flingMurdererLooped(murdPlayer)
 	isFlingingActive = true
 
 	task.spawn(function()
+		local desiredPhysics = PhysicalProperties.new(100, 0.3, 0.5)
 		while Cache.Connections["BotSyncActive"] do
 			local char = LocalPlayer.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -203,7 +214,9 @@ local function flingMurdererLooped(murdPlayer)
 
 			local murdChar = murdPlayer and murdPlayer.Character
 			local murdHRP = murdChar and murdChar:FindFirstChild("HumanoidRootPart")
-			local mHum = mHum or (murdChar and murdChar:FindFirstChildOfClass("Humanoid"))
+			
+			-- Optimized: Fixed logical scope bug for mHum
+			local mHum = murdChar and murdChar:FindFirstChildOfClass("Humanoid") 
 
 			if not hrp or not murdHRP or not hum or hum.Health <= 0 or not mHum or mHum.Health <= 0 then
 				break
@@ -216,12 +229,16 @@ local function flingMurdererLooped(murdPlayer)
 			Hub.SetNoclip(true)
 
 			hum.PlatformStand = true
-			hrp.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
+			
+			-- Optimized: Avoid redundant physics assignment instructions on every frame
+			if hrp.CustomPhysicalProperties ~= desiredPhysics then
+				hrp.CustomPhysicalProperties = desiredPhysics
+			end
 			
 			hrp.AssemblyAngularVelocity = Vector3.new(0, 999999, 0)
 			hrp.AssemblyLinearVelocity = Vector3.new(0, -2500, 0)
 
-			hrp.CFrame = murdHRP.CFrame * CFrame.new(math.random(-0.5, 0.5), 2.5, math.random(-0.5, 0.5))
+			hrp.CFrame = murdHRP.CFrame * CFrame.new(math.random(-50, 50)/100, 2.5, math.random(-50, 50)/100)
 
 			RunService.Heartbeat:Wait()
 		end
@@ -241,7 +258,15 @@ end
 -----------------------------------
 -- HELPER: SQUAD RANK DETERMINATION
 -----------------------------------
-local function GetSquadRank()
+-- Optimized: Cache table allocations and table.sort evaluations to prevent heavy frame-rate stutters
+local cachedSquadRankings = {}
+local lastSquadUpdateTime = 0
+
+local function updateSquadRankingsCache()
+	local now = tick()
+	if now - lastSquadUpdateTime < 1.0 then return end -- Cache valid for 1.0 second
+	lastSquadUpdateTime = now
+
 	local squad = { LocalPlayer }
 	for userId, isSelected in pairs(VisualSelectedBots) do
 		if isSelected then
@@ -256,35 +281,22 @@ local function GetSquadRank()
 		return a.UserId < b.UserId
 	end)
 	
+	table.clear(cachedSquadRankings)
 	for idx, player in ipairs(squad) do
-		if player == LocalPlayer then
-			return idx, #squad
-		end
+		cachedSquadRankings[player] = idx
 	end
-	return 1, 1
+end
+
+local function GetSquadRank()
+	updateSquadRankingsCache()
+	local maxCount = 0
+	for _, _ in pairs(cachedSquadRankings) do maxCount = maxCount + 1 end
+	return cachedSquadRankings[LocalPlayer] or 1, maxCount
 end
 
 local function GetPlayerSquadRank(targetPlayer)
-	local squad = { LocalPlayer }
-	for userId, isSelected in pairs(VisualSelectedBots) do
-		if isSelected then
-			local botPlayer = Players:GetPlayerByUserId(userId)
-			if botPlayer then
-				table.insert(squad, botPlayer)
-			end
-		end
-	end
-	
-	table.sort(squad, function(a, b)
-		return a.UserId < b.UserId
-	end)
-	
-	for idx, player in ipairs(squad) do
-		if player == targetPlayer then
-			return idx
-		end
-	end
-	return 999
+	updateSquadRankingsCache()
+	return cachedSquadRankings[targetPlayer] or 999
 end
 
 local function GetOtherSquadHRPs()
@@ -518,7 +530,7 @@ local function startPerformanceTracker()
 				local mins = math.floor(elapsed / 60)
 				local secs = math.floor(elapsed % 60)
 				
-				-- LIVE MAP COUNT VISUALIZATION (Decreases when collected, increases when spawned)
+				-- LIVE MAP COUNT VISUALIZATION
 				local liveCoins = #container:GetChildren()
 				timerText.Text = string.format("Time: %02d:%02d | Live on Map: %d", mins, secs, liveCoins)
 
@@ -545,7 +557,6 @@ local function startPerformanceTracker()
 					local avgCPS = totalCoinsExpected / finalTime
 					local totalCoinsTracked = initialCoinsInRound + subsequentSpawns
 
-					-- Freezes and displays cumulative round stats on completion
 					timerText.Text = string.format("FINISHED! Round: %02d:%02d | Total Spawns: %d", finalMins, finalSecs, totalCoinsTracked)
 					cpsText.Text = string.format("Average CPS: %.2f CPS", avgCPS)
 					lobbyText.Text = string.format("All %d Active Bots Finished!", activeParticipating)
@@ -648,7 +659,7 @@ function Hub.StartCoinFarm(state)
 			local coins = Hub.GetCoins()
 
 			if #coins == 0 then
-				local container = Workspace:FindFirstChild("CoinContainer", true) or Workspace:FindFirstChild("Coin_Container", true)
+				local container = findCoinContainer()
 				if not container or #container:GetChildren() == 0 then
 					table.clear(CollectedCoins)
 				end
@@ -743,9 +754,8 @@ function Hub.StartCoinFarm(state)
 				local speed = math.clamp(Cache.TweenSpeed or 20, 10, 100)
 				local duration = distance / speed
 
-				-- IMMEDIATELY blacklist the targeted coin so we (and other processes running this script)
-				-- do not double-target it during travel or immediately after arrival.
-				BlacklistedCoins[closestCoin] = tick() + duration + 2
+				-- Optimized: Adjusted immediate reservation duration
+				BlacklistedCoins[closestCoin] = tick() + duration + 1.5
 
 				local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 				local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
@@ -755,6 +765,9 @@ function Hub.StartCoinFarm(state)
 
 				local startTime = tick()
 				local tailgateStart = nil
+				
+				-- Optimized: Run anti-tailing checks on a throttled timer rather than raw Heartbeat frames
+				local nextThrottleCheck = tick() + 0.15 
 
 				while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and Cache.Connections["CoinFarmActive"] and not Hub.IsPlayerInLobby(hrp) do
 					if farmPlatform and farmPlatform.Parent then
@@ -763,49 +776,55 @@ function Hub.StartCoinFarm(state)
 
 					local currentDist = (hrp.Position - targetCFrame.Position).Magnitude
 					
-					-- Touch Detection (Loosened to 1.2 studs for a fluid glide-through touch)
+					-- Touch Detection (Loosened to 1.2 studs)
 					if currentDist <= 1.2 then
 						pcall(function() tween:Cancel() end)
 						break
 					end
 
-					-- 3-Second Tailgate Watchdog Check
-					local activeOtherHRPs = GetActiveSquadHRPs()
-					local isTailgating = false
-					local higherRankNear = false
+					local now = tick()
+					if now >= nextThrottleCheck then
+						nextThrottleCheck = now + 0.15 -- Run every 150ms
 
-					for _, otherHRP in ipairs(activeOtherHRPs) do
-						local distToOther = (hrp.Position - otherHRP.Position).Magnitude
-						if distToOther <= 8 then
-							isTailgating = true
-							
-							local otherPlayer = Players:GetPlayerFromCharacter(otherHRP.Parent)
-							if otherPlayer then
-								local otherRank = GetPlayerSquadRank(otherPlayer)
-								local myRank = GetPlayerSquadRank(LocalPlayer)
-								if otherRank < myRank then
-									higherRankNear = true
+						-- Throttled Watchdog Check
+						local activeOtherHRPs = GetActiveSquadHRPs()
+						local isTailgating = false
+						local higherRankNear = false
+
+						for _, otherHRP in ipairs(activeOtherHRPs) do
+							local distToOther = (hrp.Position - otherHRP.Position).Magnitude
+							if distToOther <= 8 then
+								isTailgating = true
+								
+								local otherPlayer = Players:GetPlayerFromCharacter(otherHRP.Parent)
+								if otherPlayer then
+									local otherRank = GetPlayerSquadRank(otherPlayer)
+									local myRank = GetPlayerSquadRank(LocalPlayer)
+									if otherRank < myRank then
+										higherRankNear = true
+									end
 								end
 							end
 						end
-					end
 
-					if isTailgating and higherRankNear then
-						tailgateStart = tailgateStart or tick()
-						local elapsedTailgate = tick() - tailgateStart
-						if elapsedTailgate >= 3 then
-							-- Trigger Abort & Scatter Pivot
-							forceScatterPivot = true
-							scatterPivotSource = hrp.Position
+						if isTailgating and higherRankNear then
+							tailgateStart = tailgateStart or now
+							local elapsedTailgate = now - tailgateStart
 							
-							-- Temporarily blacklist this specific coin to prevent re-targeting
-							BlacklistedCoins[closestCoin] = tick() + 5
-							
-							pcall(function() tween:Cancel() end)
-							break
+							-- Optimized: Reduced scatter delay to 0.75 seconds
+							if elapsedTailgate >= 0.75 then
+								forceScatterPivot = true
+								scatterPivotSource = hrp.Position
+								
+								-- Scatter blacklist
+								BlacklistedCoins[closestCoin] = now + 3
+								
+								pcall(function() tween:Cancel() end)
+								break
+							end
+						else
+							tailgateStart = nil
 						end
-					else
-						tailgateStart = nil
 					end
 
 					RunService.Heartbeat:Wait()
@@ -832,6 +851,9 @@ end
 -----------------------------------
 -- COIN ESP HIGHLIGHTS
 -----------------------------------
+-- Optimized: Store selection boxes inside an active tracking table to avoid Workspace:GetDescendants() lag
+local activeESPBoxes = {}
+
 function Hub.StartCoinESP(state)
 	Cache.Connections["ExpandHitboxes"] = state
 	if state then
@@ -849,6 +871,8 @@ function Hub.StartCoinESP(state)
 								box.LineThickness = 0.05
 								box.Transparency = 0.4
 								box.Parent = coinPart
+								
+								table.insert(activeESPBoxes, box)
 							end
 						end
 					end
@@ -857,11 +881,13 @@ function Hub.StartCoinESP(state)
 			end
 		end)
 	else
-		for _, descendant in ipairs(Workspace:GetDescendants()) do
-			if descendant:FindFirstChild("DashboardBox") then
-				descendant.DashboardBox:Destroy()
+		-- Optimized: Remove ESP dynamically using our local tracker instead of scanning workspace descendants
+		for _, box in ipairs(activeESPBoxes) do
+			if box and box.Parent then
+				pcall(function() box:Destroy() end)
 			end
 		end
+		table.clear(activeESPBoxes)
 	end
 end
 
