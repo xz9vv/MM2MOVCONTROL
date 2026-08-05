@@ -27,6 +27,19 @@ local BlacklistedCoins = {}  -- Format: [coinInstance] = expirationTick
 local forceScatterPivot = false
 local scatterPivotSource = nil
 
+-- Stats HUD UI Elements
+local screenGui = nil
+local statsFrame = nil
+local timerText = nil
+local cpsText = nil
+local lobbyText = nil
+local trackingActive = false
+
+-- Helper to recursively find the MM2 coin container
+local function findCoinContainer()
+	return Workspace:FindFirstChild("CoinContainer", true) or Workspace:FindFirstChild("Coin_Container", true)
+end
+
 -----------------------------------
 -- LOCAL BLACK FARM PLATFORM SYSTEM
 -----------------------------------
@@ -251,7 +264,6 @@ local function GetSquadRank()
 	return 1, 1
 end
 
--- Helper: Fetch the rank of a specific player safely
 local function GetPlayerSquadRank(targetPlayer)
 	local squad = { LocalPlayer }
 	for userId, isSelected in pairs(VisualSelectedBots) do
@@ -291,7 +303,6 @@ local function GetOtherSquadHRPs()
 	return hrps
 end
 
--- Helper: Get active farming bots (excluding dead/lobby/full accounts)
 local function GetActiveSquadHRPs()
 	local hrps = {}
 	for userId, isSelected in pairs(VisualSelectedBots) do
@@ -316,6 +327,179 @@ local function GetActiveSquadHRPs()
 end
 
 -----------------------------------
+-- PERFORMANCE HUD INTERACTION
+-----------------------------------
+local function createStatsHUD()
+	if screenGui then return end
+	
+	screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "SquadStatsHUD"
+	screenGui.ResetOnSpawn = false
+	pcall(function() 
+		screenGui.Parent = Services.CoreGui or LocalPlayer:WaitForChild("PlayerGui") 
+	end)
+
+	statsFrame = Instance.new("Frame")
+	statsFrame.Size = UDim2.new(0, 240, 0, 100)
+	statsFrame.Position = UDim2.new(0, 10, 0.45, 0)
+	statsFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+	statsFrame.BorderSizePixel = 0
+	statsFrame.Active = true
+	statsFrame.Draggable = true
+	statsFrame.Parent = screenGui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = statsFrame
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(197, 160, 89)
+	stroke.Thickness = 1.2
+	stroke.Parent = statsFrame
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, 0, 0, 25)
+	title.BackgroundTransparency = 1
+	title.Text = "SQUAD PERFORMANCE STATS"
+	title.TextColor3 = Color3.fromRGB(197, 160, 89)
+	title.TextSize = 10
+	title.Font = Enum.Font.SourceSansBold
+	title.Parent = statsFrame
+
+	timerText = Instance.new("TextLabel")
+	timerText.Size = UDim2.new(1, 0, 0, 20)
+	timerText.Position = UDim2.new(0, 0, 0, 25)
+	timerText.BackgroundTransparency = 1
+	timerText.Text = "Time: Waiting for round..."
+	timerText.TextColor3 = Color3.fromRGB(240, 240, 240)
+	timerText.TextSize = 13
+	timerText.Font = Enum.Font.SourceSansSemibold
+	timerText.Parent = statsFrame
+
+	cpsText = Instance.new("TextLabel")
+	cpsText.Size = UDim2.new(1, 0, 0, 20)
+	cpsText.Position = UDim2.new(0, 0, 0, 45)
+	cpsText.BackgroundTransparency = 1
+	cpsText.Text = "Average CPS: Waiting..."
+	cpsText.TextColor3 = Color3.fromRGB(46, 204, 113)
+	cpsText.TextSize = 13
+	cpsText.Font = Enum.Font.SourceSansBold
+	cpsText.Parent = statsFrame
+
+	lobbyText = Instance.new("TextLabel")
+	lobbyText.Size = UDim2.new(1, 0, 0, 20)
+	lobbyText.Position = UDim2.new(0, 0, 0, 65)
+	lobbyText.BackgroundTransparency = 1
+	lobbyText.Text = "Squad in Lobby: 0/0"
+	lobbyText.TextColor3 = Color3.fromRGB(150, 150, 150)
+	lobbyText.TextSize = 12
+	lobbyText.Font = Enum.Font.SourceSansSemibold
+	lobbyText.Parent = statsFrame
+end
+
+local function destroyStatsHUD()
+	if screenGui then
+		pcall(function() screenGui:Destroy() end)
+		screenGui = nil
+	end
+end
+
+local function startPerformanceTracker()
+	if trackingActive then return end
+	trackingActive = true
+	createStatsHUD()
+
+	task.spawn(function()
+		local farmStarted = false
+		local startTime = nil
+		local hasLeftLobby = false
+		local statsFrozen = false
+		local totalCoinsExpected = 240
+
+		while Cache.Connections["CoinFarmActive"] and trackingActive do
+			task.wait(0.5)
+
+			local container = findCoinContainer()
+			local ourChar = LocalPlayer.Character
+			local ourHRP = ourChar and ourChar:FindFirstChild("HumanoidRootPart")
+
+			if container and #container:GetChildren() > 0 then
+				if not farmStarted then
+					farmStarted = true
+					startTime = tick()
+					hasLeftLobby = false
+					statsFrozen = false
+				end
+			else
+				farmStarted = false
+			end
+
+			if farmStarted and not statsFrozen then
+				local totalSelected = 1
+				local inLobbyCount = 0
+
+				if ourHRP and Hub.IsPlayerInLobby(ourHRP) then
+					inLobbyCount = inLobbyCount + 1
+				end
+
+				for userId, isSelected in pairs(VisualSelectedBots) do
+					if isSelected then
+						totalSelected = totalSelected + 1
+						local botPlayer = Players:GetPlayerByUserId(userId)
+						if botPlayer and botPlayer.Character then
+							local bHRP = botPlayer.Character:FindFirstChild("HumanoidRootPart")
+							if bHRP and Hub.IsPlayerInLobby(bHRP) then
+								inLobbyCount = inLobbyCount + 1
+							end
+						else
+							inLobbyCount = inLobbyCount + 1
+						end
+					end
+				end
+
+				totalCoinsExpected = totalSelected * 40
+
+				if inLobbyCount < totalSelected then
+					hasLeftLobby = true
+				end
+
+				local elapsed = tick() - startTime
+				local mins = math.floor(elapsed / 60)
+				local secs = math.floor(elapsed % 60)
+				
+				timerText.Text = string.format("Farming Time: %02d:%02d", mins, secs)
+				lobbyText.Text = string.format("Squad in Lobby: %d / %d", inLobbyCount, totalSelected)
+
+				local completedBots = inLobbyCount
+				if not hasLeftLobby then completedBots = 0 end
+				
+				local estimatedCoinsGained = completedBots * 40
+				local liveCPS = estimatedCoinsGained / elapsed
+				cpsText.Text = string.format("Live CPS: %.2f CPS", liveCPS)
+
+				if hasLeftLobby and inLobbyCount == totalSelected then
+					statsFrozen = true
+					local finalTime = elapsed
+					local finalMins = math.floor(finalTime / 60)
+					local finalSecs = math.floor(finalTime % 60)
+					local avgCPS = totalCoinsExpected / finalTime
+
+					timerText.Text = string.format("FINISHED! Round Took: %02d:%02d", finalMins, finalSecs)
+					cpsText.Text = string.format("Average CPS: %.2f CPS", avgCPS)
+					lobbyText.Text = "All Bots Full & In Lobby!"
+				end
+			elseif not farmStarted then
+				timerText.Text = "Time: Waiting for round..."
+				cpsText.Text = "Average CPS: Waiting..."
+				lobbyText.Text = "Squad in Lobby: Waiting..."
+			end
+		end
+		destroyStatsHUD()
+		trackingActive = false
+	end)
+end
+
+-----------------------------------
 -- COIN FARM TOGGLE & LOOP
 -----------------------------------
 function Hub.StartCoinFarm(state)
@@ -327,11 +511,13 @@ function Hub.StartCoinFarm(state)
 			Cache.CurrentTween = nil
 		end
 		destroyFarmPlatform()
+		destroyStatsHUD()
 		Hub.SetNoclip(false)
 		return
 	end
 
 	task.spawn(function()
+		startPerformanceTracker()
 		while Cache.Connections["CoinFarmActive"] do
 			task.wait(0.01)
 
@@ -418,18 +604,15 @@ function Hub.StartCoinFarm(state)
 			local myExclusiveCoins = {}
 			local fallbackCoins = {}
 
-			-- Helper to populate target tables based on distances and scatter rules
 			local function evaluateCoins(applyScatter)
 				table.clear(myExclusiveCoins)
 				table.clear(fallbackCoins)
 
 				for _, coin in ipairs(coins) do
 					if coin and coin.Parent and coin.Position.Magnitude > 10 then
-						-- Filter via the rolling 3-second cooldown blacklist
 						local exp = BlacklistedCoins[coin]
 						if not exp or tick() >= exp then
 							
-							-- Filter via the 30-stud Scatter Pivot if active
 							local passesDistanceConstraint = true
 							if applyScatter and forceScatterPivot and scatterPivotSource then
 								if (coin.Position - scatterPivotSource).Magnitude < 30 then
@@ -454,7 +637,6 @@ function Hub.StartCoinFarm(state)
 								if closestParticipant == hrp then
 									table.insert(myExclusiveCoins, { coin = coin, dist = myDist })
 								else
-									-- Filter out falling fallback targets to prevent overlaps
 									if minParticipantDist > 12 then
 										table.insert(fallbackCoins, { coin = coin, dist = myDist })
 									end
@@ -465,10 +647,8 @@ function Hub.StartCoinFarm(state)
 				end
 			end
 
-			-- Try applying the Scatter Pivot constraint first
 			evaluateCoins(true)
 
-			-- Failsafe: If scatter constraint made all targets empty, recalculate without constraint
 			if #myExclusiveCoins == 0 and #fallbackCoins == 0 and forceScatterPivot then
 				evaluateCoins(false)
 			end
@@ -483,7 +663,6 @@ function Hub.StartCoinFarm(state)
 				closestCoin = fallbackCoins[1].coin
 			end
 
-			-- If we successfully targeted a coin, we can safely reset the scatter pivot
 			if closestCoin then
 				forceScatterPivot = false
 				scatterPivotSource = nil
@@ -516,15 +695,12 @@ function Hub.StartCoinFarm(state)
 
 					local currentDist = (hrp.Position - targetCFrame.Position).Magnitude
 					
-					-- Touch Detection
 					if currentDist <= 0.4 then
-						-- Cooldown Blacklist (3 seconds) to prevent double-touches
 						BlacklistedCoins[closestCoin] = tick() + 3
 						pcall(function() tween:Cancel() end)
 						break
 					end
 
-					-- 3-Second Tailgate Watchdog Check
 					local activeOtherHRPs = GetActiveSquadHRPs()
 					local isTailgating = false
 					local higherRankNear = false
@@ -549,11 +725,9 @@ function Hub.StartCoinFarm(state)
 						tailgateStart = tailgateStart or tick()
 						local elapsedTailgate = tick() - tailgateStart
 						if elapsedTailgate >= 3 then
-							-- Trigger Abort & Scatter Pivot
 							forceScatterPivot = true
 							scatterPivotSource = hrp.Position
 							
-							-- Temporarily blacklist this specific coin to prevent re-targeting
 							BlacklistedCoins[closestCoin] = tick() + 5
 							
 							pcall(function() tween:Cancel() end)
@@ -576,7 +750,7 @@ function Hub.StartCoinFarm(state)
 		end
 
 		if Cache.CurrentTween then
-			pcall(function() Cache.CurrentTween:Cancel() Cache.CurrentTween:Destroy() end)
+			pcall(function() pcall(function() Cache.CurrentTween:Cancel() end) pcall(function() Cache.CurrentTween:Destroy() end) end)
 			Cache.CurrentTween = nil
 		end
 		destroyFarmPlatform()
@@ -722,4 +896,4 @@ function Hub.StartBotSync(state)
 	end
 end
 
-print("[MM2 Hub] FarmingAndBots.lua loaded successfully with Spatial Coordination!")
+print("[MM2 Hub] FarmingAndBots.lua loaded successfully with Spatial Coordination & Stats HUD!")
