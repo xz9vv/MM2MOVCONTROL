@@ -340,7 +340,7 @@ local function createStatsHUD()
 	end)
 
 	statsFrame = Instance.new("Frame")
-	statsFrame.Size = UDim2.new(0, 240, 0, 100)
+	statsFrame.Size = UDim2.new(0, 260, 0, 100)
 	statsFrame.Position = UDim2.new(0, 10, 0.45, 0)
 	statsFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
 	statsFrame.BorderSizePixel = 0
@@ -390,7 +390,7 @@ local function createStatsHUD()
 	lobbyText.Size = UDim2.new(1, 0, 0, 20)
 	lobbyText.Position = UDim2.new(0, 0, 0, 65)
 	lobbyText.BackgroundTransparency = 1
-	lobbyText.Text = "Squad in Lobby: 0/0"
+	lobbyText.Text = "Squad: 0 Finished / 0 Active"
 	lobbyText.TextColor3 = Color3.fromRGB(150, 150, 150)
 	lobbyText.TextSize = 12
 	lobbyText.Font = Enum.Font.SourceSansSemibold
@@ -412,9 +412,15 @@ local function startPerformanceTracker()
 	task.spawn(function()
 		local farmStarted = false
 		local startTime = nil
-		local hasLeftLobby = false
 		local statsFrozen = false
-		local totalCoinsExpected = 240
+		
+		-- Real-time state machine to handle queuing and avoid premature resets
+		local squadStates = {} -- Format: [userId_or_LocalPlayer] = "idle" / "farming" / "finished"
+		
+		-- Track total round coins dynamically (Initial coins + any additions)
+		local initialCoinsInRound = 0
+		local subsequentSpawns = 0
+		local spawnConn = nil
 
 		while Cache.Connections["CoinFarmActive"] and trackingActive do
 			task.wait(0.5)
@@ -427,73 +433,132 @@ local function startPerformanceTracker()
 				if not farmStarted then
 					farmStarted = true
 					startTime = tick()
-					hasLeftLobby = false
 					statsFrozen = false
+					initialCoinsInRound = #container:GetChildren()
+					subsequentSpawns = 0
+					table.clear(squadStates)
+
+					-- Dynamically monitor every coin spawned during the round
+					if spawnConn then pcall(function() spawnConn:Disconnect() end) end
+					spawnConn = container.ChildAdded:Connect(function()
+						subsequentSpawns = subsequentSpawns + 1
+					end)
 				end
 			else
 				farmStarted = false
+				if spawnConn then 
+					pcall(function() spawnConn:Disconnect() end) 
+					spawnConn = nil 
+				end
 			end
 
 			if farmStarted and not statsFrozen then
 				local totalSelected = 1
-				local inLobbyCount = 0
+				local activeFarmingCount = 0
+				local finishedCount = 0
 
-				if ourHRP and Hub.IsPlayerInLobby(ourHRP) then
-					inLobbyCount = inLobbyCount + 1
+				-- 1. Evaluate LocalPlayer State
+				if ourHRP then
+					local inLobby = Hub.IsPlayerInLobby(ourHRP)
+					local bagFull = LocalPlayer:GetAttribute("BagFull") == true
+
+					if squadStates[LocalPlayer.UserId] == nil or squadStates[LocalPlayer.UserId] == "idle" then
+						if not inLobby then
+							squadStates[LocalPlayer.UserId] = "farming"
+						else
+							squadStates[LocalPlayer.UserId] = "idle"
+						end
+					elseif squadStates[LocalPlayer.UserId] == "farming" then
+						if inLobby or bagFull then
+							squadStates[LocalPlayer.UserId] = "finished"
+						end
+					end
 				end
 
+				if squadStates[LocalPlayer.UserId] == "farming" then
+					activeFarmingCount = activeFarmingCount + 1
+				elseif squadStates[LocalPlayer.UserId] == "finished" then
+					finishedCount = finishedCount + 1
+				end
+
+				-- 2. Evaluate other selected bots
 				for userId, isSelected in pairs(VisualSelectedBots) do
 					if isSelected then
 						totalSelected = totalSelected + 1
 						local botPlayer = Players:GetPlayerByUserId(userId)
 						if botPlayer and botPlayer.Character then
 							local bHRP = botPlayer.Character:FindFirstChild("HumanoidRootPart")
-							if bHRP and Hub.IsPlayerInLobby(bHRP) then
-								inLobbyCount = inLobbyCount + 1
+							local bHum = botPlayer.Character:FindFirstChildOfClass("Humanoid")
+							
+							if bHRP and bHum and bHum.Health > 0 then
+								local inLobby = Hub.IsPlayerInLobby(bHRP)
+								local bagFull = botPlayer:GetAttribute("BagFull") == true
+
+								if squadStates[userId] == nil or squadStates[userId] == "idle" then
+									if not inLobby then
+										squadStates[userId] = "farming"
+									else
+										squadStates[userId] = "idle"
+									end
+								elseif squadStates[userId] == "farming" then
+									if inLobby or bagFull then
+										squadStates[userId] = "finished"
+									end
+								end
 							end
-						else
-							inLobbyCount = inLobbyCount + 1
+						end
+
+						if squadStates[userId] == "farming" then
+							activeFarmingCount = activeFarmingCount + 1
+						elseif squadStates[userId] == "finished" then
+							finishedCount = finishedCount + 1
 						end
 					end
 				end
 
-				totalCoinsExpected = totalSelected * 40
-
-				if inLobbyCount < totalSelected then
-					hasLeftLobby = true
-				end
-
+				-- 3. Calculate timing and coins
 				local elapsed = tick() - startTime
 				local mins = math.floor(elapsed / 60)
 				local secs = math.floor(elapsed % 60)
+				local totalCoinsTracked = initialCoinsInRound + subsequentSpawns
 				
-				timerText.Text = string.format("Farming Time: %02d:%02d", mins, secs)
-				lobbyText.Text = string.format("Squad in Lobby: %d / %d", inLobbyCount, totalSelected)
+				timerText.Text = string.format("Time: %02d:%02d | Coins in Round: %d", mins, secs, totalCoinsTracked)
 
-				local completedBots = inLobbyCount
-				if not hasLeftLobby then completedBots = 0 end
-				
-				local estimatedCoinsGained = completedBots * 40
+				-- Calculate how many bots have actually participated (entered "farming" or "finished")
+				local activeParticipating = 0
+				for id, state in pairs(squadStates) do
+					if state == "farming" or state == "finished" then
+						activeParticipating = activeParticipating + 1
+					end
+				end
+
+				lobbyText.Text = string.format("Squad: %d Finished / %d Active", finishedCount, activeParticipating)
+
+				local estimatedCoinsGained = finishedCount * 40
 				local liveCPS = estimatedCoinsGained / elapsed
 				cpsText.Text = string.format("Live CPS: %.2f CPS", liveCPS)
 
-				if hasLeftLobby and inLobbyCount == totalSelected then
+				-- 4. Dynamic completion trigger (Only freeze when all actively participating bots finish)
+				if activeParticipating > 0 and finishedCount == activeParticipating then
 					statsFrozen = true
 					local finalTime = elapsed
 					local finalMins = math.floor(finalTime / 60)
 					local finalSecs = math.floor(finalTime % 60)
+					local totalCoinsExpected = activeParticipating * 40
 					local avgCPS = totalCoinsExpected / finalTime
 
-					timerText.Text = string.format("FINISHED! Round Took: %02d:%02d", finalMins, finalSecs)
+					timerText.Text = string.format("FINISHED! Round Took: %02d:%02d | Coins: %d", finalMins, finalSecs, totalCoinsTracked)
 					cpsText.Text = string.format("Average CPS: %.2f CPS", avgCPS)
-					lobbyText.Text = "All Bots Full & In Lobby!"
+					lobbyText.Text = string.format("All %d Active Bots Finished!", activeParticipating)
 				end
 			elseif not farmStarted then
 				timerText.Text = "Time: Waiting for round..."
 				cpsText.Text = "Average CPS: Waiting..."
-				lobbyText.Text = "Squad in Lobby: Waiting..."
+				lobbyText.Text = "Squad: Waiting for bots..."
 			end
 		end
+
+		if spawnConn then pcall(function() spawnConn:Disconnect() end) end
 		destroyStatsHUD()
 		trackingActive = false
 	end)
@@ -679,6 +744,10 @@ function Hub.StartCoinFarm(state)
 				local speed = math.clamp(Cache.TweenSpeed or 20, 10, 100)
 				local duration = distance / speed
 
+				-- IMMEDIATELY blacklist the targeted coin so we (and other processes running this script)
+				-- do not double-target it during travel or immediately after arrival.
+				BlacklistedCoins[closestCoin] = tick() + duration + 2
+
 				local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 				local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
 				Cache.CurrentTween = tween
@@ -695,12 +764,13 @@ function Hub.StartCoinFarm(state)
 
 					local currentDist = (hrp.Position - targetCFrame.Position).Magnitude
 					
-					if currentDist <= 0.4 then
-						BlacklistedCoins[closestCoin] = tick() + 3
+					-- Touch Detection (Loosened to 1.2 studs for a fluid glide-through touch)
+					if currentDist <= 1.2 then
 						pcall(function() tween:Cancel() end)
 						break
 					end
 
+					-- 3-Second Tailgate Watchdog Check
 					local activeOtherHRPs = GetActiveSquadHRPs()
 					local isTailgating = false
 					local higherRankNear = false
@@ -725,9 +795,11 @@ function Hub.StartCoinFarm(state)
 						tailgateStart = tailgateStart or tick()
 						local elapsedTailgate = tick() - tailgateStart
 						if elapsedTailgate >= 3 then
+							-- Trigger Abort & Scatter Pivot
 							forceScatterPivot = true
 							scatterPivotSource = hrp.Position
 							
+							-- Temporarily blacklist this specific coin to prevent re-targeting
 							BlacklistedCoins[closestCoin] = tick() + 5
 							
 							pcall(function() tween:Cancel() end)
@@ -896,4 +968,4 @@ function Hub.StartBotSync(state)
 	end
 end
 
-print("[MM2 Hub] FarmingAndBots.lua loaded successfully with Spatial Coordination & Stats HUD!")
+print("[MM2 Hub] FarmingAndBots.lua loaded successfully with Spatial Coordination & Fixed Stats HUD!")
